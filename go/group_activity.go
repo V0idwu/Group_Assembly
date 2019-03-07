@@ -19,7 +19,6 @@ import (
 	sc "github.com/hyperledger/fabric/protos/peer"
 )
 
-//测试git
 // --------------------------------------------
 // 业务全局变量
 // --------------------------------------------
@@ -80,12 +79,6 @@ type Result struct {
 	Owners       []string
 	ActivityTime string
 	CompleteTime string //撮合完成时间
-=======
-	ID           []string `json:"id"`
-	Requests     []Request
-	GenerateTime string `json:"generateTime"` //撮合产生时间
-	CompleteTime string `json:"completeTime"` //撮合完成时间
->>>>>>> origin/master
 }
 
 // 工具方法：类型转换
@@ -185,9 +178,6 @@ func (s *SmartContract) createRequest(stub shim.ChaincodeStubInterface, args []s
 	if existRequest != nil {
 		return shim.Error("Exist Request. ")
 	}
-
-
-
 
 	var owner, _ = GetCertAttribute2(stub)
 	var request = Request{ID: args[0], Location: args[1], RegisterTime: time.Now().Unix(), ActivityTime: args[2], Deposit: args[3], State: "0", Owner: owner, ResultID: ""}
@@ -312,7 +302,7 @@ func (s *SmartContract) queryMyRequest(stub shim.ChaincodeStubInterface) sc.Resp
 	return shim.Success(queryResults)
 }
 
-func (s *SmartContract) getAllLocationsToDapp(stub shim.ChaincodeStubInterface) sc.Response{
+func (s *SmartContract) getAllLocationsToDapp(stub shim.ChaincodeStubInterface) sc.Response {
 	return shim.Success(nil)
 }
 
@@ -344,7 +334,7 @@ func getAllLocations(stub shim.ChaincodeStubInterface) ([]byte, error) {
 	//if err != nil {
 	//	return nil, errors.New("Failed to Unmarshal:" + err.Error())
 	//}
-	return nil,nil
+	return nil, nil
 }
 
 // 查询相同请求人数
