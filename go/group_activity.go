@@ -16,6 +16,7 @@ import (
 	sc "github.com/hyperledger/fabric/protos/peer"
 )
 
+//测试git
 // --------------------------------------------
 // 业务全局变量
 // --------------------------------------------
@@ -67,8 +68,8 @@ type Request struct {
 }
 
 type Result struct {
-	ID          []string `json:"id"`
-	Requests	[]Request
+	ID           []string `json:"id"`
+	Requests     []Request
 	GenerateTime string `json:"generateTime"` //撮合产生时间
 	CompleteTime string `json:"completeTime"` //撮合完成时间
 }
@@ -129,7 +130,7 @@ func (s *SmartContract) registerToActivity(stub shim.ChaincodeStubInterface, arg
 	}
 	var owner, _ = GetCertAttribute2(stub)
 	participant_number = participant_number + 1
-	var request = Request{ID: strconv.Itoa(participant_number), Location: args[0], RegisterTime: args[1], Deposit: args[2],  State: "0", Owner: owner, ResultID: ""}
+	var request = Request{ID: strconv.Itoa(participant_number), Location: args[0], RegisterTime: args[1], Deposit: args[2], State: "0", Owner: owner, ResultID: ""}
 
 	requestAsBytes, _ := json.Marshal(request)
 	stub.PutState(args[0], requestAsBytes)
