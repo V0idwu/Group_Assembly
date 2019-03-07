@@ -1,0 +1,99 @@
+问题描述：从n个报名者中选择m个人撮合成一组参加活动，使得该分组下的活动满意度最高。
+注：m不是固定值，具有上下限，对于m取每一个固定值时，问题简化为：将m个'1'（表示被选中撮合）和(n-m)个'0'（表示未被选中）分配给n个报名者，每个报名者只能被分配一次，每一种分配方案都是一个可行解，使得活动满意度最高的分配方案是最优解。
+
+参数定义：
+M_LOW, M_HIGH 活动参与人数上下限
+applicantNum  活动报名人数
+depositAndTime[0...applicantNum-1] 报名者的时间和押金的综合价值数组
+iteratorNum 迭代次数
+antNum 蚂蚁数量
+pheromoneMatrix[0...applicantNum-1][0...applicantNum-1] 信息素矩阵
+sortedPheromoneMatrix[0...applicantNum-1][0...applicantNum-1] 信息素矩阵中每一行的信息素从大到小的下标排列
+criticalPointMatrix[0...applicantNum-1] 在一次迭代中，采用随机分配策略的蚂蚁的临界编号
+p 每完成一次迭代后，信息素衰减的比例
+q 蚂蚁每次经过一条路径，信息素增加的比例
+
+输出：最优分配bestPath，对应满意度bestSatis
+function acaSearch()
+	for m = M_LOW → M_HIGH do
+		初始化pheromoneMatrix[0...applicantNum-1][0...applicantNum-1]的元素都为1
+		初始化sortedPheromoneMatrix[0...applicantNum-1][0...applicantNum-1]每一行都为 0,1,2,...,applicantNum-1
+		初始化criticalPointMatrix[0...applicantNum-1]的元素都为-1
+		初始化nodes[0...applicantNum-1]的前m个元素为1，后(applicantNum-m)个元素为0
+		for itCount = 0 → iteratorNum-1 do      // 迭代iteratorNum次
+			pathMatrix_allAnt ← [][][]          //
+			for antCount = 0 → antNum-1 do      // 每个蚂蚁的路径
+				初始化pathMatrix_oneAnt[0...applicantNum-1][0...applicantNum-1]的元素都为0。pathMatrix_oneAnt是一个二维矩阵，所有元素要么是0要么是1.比如：pathMatrix_oneAnt[i][j]=1就表示当前蚂蚁给某个活动的第i组中分配参与者j
+				assignedApplicant ← []
+				for nodeCount = 0 → applicantNum-1 do
+					applicantCount ← assignOneNode(assignedApplicant, antCount, nodeCount)
+					pathMatrix_oneAnt[nodeCount][applicantCount] ← 1
+					assignedApplicant.append(applicantCount)
+				end for
+				pathMatrix_allAnt.append(pathMatrix_oneAnt)     // 一次迭代的所有分配
+			end for
+			satisArray_oneIt ← calSatis_oneIt(pathMatrix_allAnt, nodes)     // 计算满意度
+			updatePheromoneMatrix(pathMatrix_allAnt, satisArray_oneIt)      // 根据信息素，更新满意度矩阵
+			bestSatisForCurM, bestPathForCurM ← 更新当前m值下的最大满意度和其对应的分配路径
+		end for
+		bestPathForEachM.append(bestPathForCurM)
+		bestSatisForEachM.append(bestSatisForCurM)
+	end for
+	bestSatis, bestPath ← bestSatisForEachM的最大值和其对应的分配路径
+	return bestSatis, bestPath
+
+function assignOneNode(assignedApplicant, antCount, nodeCount)
+	sorted_index ← sortedPheromoneMatrix[nodeCount]
+	删除sorted_index中包含的与assignedApplicant相同的元素
+	if antCount <= criticalPointMatrix[nodeCount] then
+		sameFirst ← 1
+		for i = 0 → sorted_index.length-1 do
+			if pheromoneMatrix[nodeCount][sorted_index[i]] == pheromoneMatrix[nodeCount][sorted_index[i+1]] then
+				sameFirst ← i + 2
+			else
+				break
+			end if
+		end for
+		randIndex ← 区间[0, sameFirst)的随机数
+		return sorted_index[randIndex]
+	end if
+	randIndex ← 区间[0, sorted_index.length)的随机数
+	return sorted_index[randIndex]
+
+function calSatis_oneIt(pathMatrix_allAnt, nodes)
+	satisArray_oneIt ← []
+	for i = 0 → antNum do
+		data ← []
+		for nodeIndex = 0 → applicantNum-1 do
+			for applicantIndex = 0 → applicantNum-1 do
+				if pathMatrix_allAnt[i][nodeIndex][applicantIndex] == 1 and nodes[nodeIndex] == 1 then
+					data.append(depositAndTime[applicantIndex])
+				end if
+			end for
+		end for
+		variance ← 计算data数组的方差
+		satisArray_oneIt.append(1/variance)
+	end for
+	return satisArray_oneIt
+
+function updatePheromoneMatrix(pathMatrix_allAnt, satisArray_oneIt)
+	pheromoneMatrix[0...applicantNum-1][0...applicantNum-1]的每个元素都乘以p
+	maxAntIndex ← 当前迭代下满意度最高的蚂蚁编号
+	for nodeIndex = 0 → applicantNum-1 do
+		for applicantIndex = 0 → applicantNum-1 do
+			if pathMatrix_allAnt[maxAntIndex][nodeIndex][applicantIndex] == 1 then
+				pheromoneMatrix[nodeIndex][applicantIndex] ← pheromoneMatrix[nodeIndex][applicantIndex] * q
+				break
+			end if
+		end for
+	end for
+	criticalPointMatrix ← []
+	sortedPheromoneMatrix ← [][]
+	for nodeIndex = 0 → applicantNum-1 do
+		maxPheromone ← pheromoneMatrix[nodeIndex]的最大值
+		sumPheromone ← pheromoneMatrix[nodeIndex]元素之和
+		criticalValue ← antNum * (maxPheromone/sumPheromone)四舍五入取整
+		criticalPointMatrix.append(criticalValue)
+		sortedPheromoneMatrix_one ← pheromoneMatrix[nodeIndex]的元素由大到小对应的下标排列
+		sortedPheromoneMatrix.append(sortedPheromoneMatrix_one)
+	end for

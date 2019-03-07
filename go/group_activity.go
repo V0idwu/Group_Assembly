@@ -7,10 +7,13 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"github.com/pkg/errors"
 	"math"
 	"math/rand"
+	"reflect"
 	"strconv"
 	"time"
+	"unsafe"
 
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	sc "github.com/hyperledger/fabric/protos/peer"
@@ -19,8 +22,9 @@ import (
 // --------------------------------------------
 // 业务全局变量
 // --------------------------------------------
-
-var participant_number int = 0 // 活动参与人数
+var allParticipantsInActivity int = 0             // 所有参与人数
+var idToSequenceNumber = make(map[string]int)     // 用户ID对应到撮合时的序号
+var ActivityTimeClass = make(map[string][]string) // 按照注册时间分类后的结果
 
 // --------------------------------------------
 // 蚁群算法的全局常量
@@ -36,7 +40,7 @@ const MIN_VALUE = float64(^int(^uint(0) >> 1))
 const DURATION int = 3
 
 // 全局变量
-var applicantNum int    //报名人数
+var applicantNum int    //活动人数
 var deposit []float64   //每位报名者对应的押金
 var timeValue []float64 //每位报名者当前对应的时间价值
 var depositAndTime []float64
@@ -57,24 +61,26 @@ type SmartContract struct {
 }
 
 type Request struct {
-	ID           string `json:"ID"`
-	Location     string `json:"location"`  //位置
-	RegisterTime string `json:"startTime"` //客户端选择某一个上午，计算出那个上午的开始时间，再发给链码，这样方便以后修改时间选择策略
-	Deposit      string `json:"deposit"`   //押金
-	State        string `json:"state"`     //被撮合状态，0未撮合，1已撮合还未到参加活动时间，2取消戳和，3已撮合被判断未参加活动，4已撮合被判断已参加活动
+	ID           string
+	Location     string //位置
+	RegisterTime int64  //客户端选择某一个上午，计算出那个上午的开始时间，再发给链码，这样方便以后修改时间选择策略
+	ActivityTime string
+	Deposit      string //押金
+	State        string //被撮合状态，0未撮合，1已撮合还未到参加活动时间，2取消戳和，3已撮合被判断未参加活动，4已撮合被判断已参加活动
 	Owner        string
-	ResultID     string `json:"resultID"` //被撮合到同一组别的用户会被分配一个相同的uid
+	ResultID     string //被撮合到同一组别的用户会被分配一个相同的uid
 }
 
+// 在state db中使用GenerateTime作为result的主键
 type Result struct {
-	ID          []string `json:"id"`
-	Requests	[]Request
-	GenerateTime string `json:"generateTime"` //撮合产生时间
-	CompleteTime string `json:"completeTime"` //撮合完成时间
+	GenerateTime string //撮合产生时间
+	IDs          []string
+	Owners       []string
+	ActivityTime string
+	CompleteTime string //撮合完成时间
 }
 
-// 工具方法
-
+// 工具方法：类型转换
 func Float64ToByte(float float64) []byte {
 	bits := math.Float64bits(float)
 	bytes := make([]byte, 8)
@@ -88,6 +94,26 @@ func ByteToFloat64(bytes []byte) float64 {
 	return math.Float64frombits(bits)
 }
 
+// String 和 []byte 相互转换
+func stringtoslicebyte(s string) []byte {
+	sh := (*reflect.StringHeader)(unsafe.Pointer(&s))
+	bh := reflect.SliceHeader{
+		Data: sh.Data,
+		Len:  sh.Len,
+		Cap:  sh.Len,
+	}
+	return *(*[]byte)(unsafe.Pointer(&bh))
+}
+
+func slicebytetostring(b []byte) string {
+	bh := (*reflect.SliceHeader)(unsafe.Pointer(&b))
+	sh := reflect.StringHeader{
+		Data: bh.Data,
+		Len:  bh.Len,
+	}
+	return *(*string)(unsafe.Pointer(&sh))
+}
+
 //重写shim.ChaincodeStubInterface接口的 Init 方法
 func (s *SmartContract) Init(stub shim.ChaincodeStubInterface) sc.Response {
 	return shim.Success(nil)
@@ -95,7 +121,7 @@ func (s *SmartContract) Init(stub shim.ChaincodeStubInterface) sc.Response {
 
 // 初始化账本方法
 func (s *SmartContract) initLedger(stub shim.ChaincodeStubInterface) sc.Response {
-	filter()
+	test()
 	return shim.Success(nil)
 }
 
@@ -105,42 +131,73 @@ func (s *SmartContract) Invoke(stub shim.ChaincodeStubInterface) sc.Response {
 	function, args := stub.GetFunctionAndParameters()
 	fmt.Println("Invoke is running " + function)
 	//根据用户意图判断使用何种实现函数
-	if function == "registerToActivity" {
-		return s.registerToActivity(stub, args)
-	} else if function == "updateRequest" {
-		return s.updateRequest(stub, args)
-	} else if function == "cancelRequest" {
+
+	switch function {
+	case "createRequest":
+		return s.createRequest(stub, args)
+	case "updateRequest":
+		return s.createRequest(stub, args)
+	case "cancelRequest":
 		return s.cancelRequest(stub, args)
-	} else if function == "confirmOrder" { //确认大家是否参加活动，暂时没有这个函数
+	case "confirmRequest":
 		return s.confirmOrder(stub, args)
-	} else if function == "initLedger" {
+	case "showAllRequest":
+		return s.showAllRequest(stub)
+
+	case "initLedger":
 		return s.initLedger(stub)
-	} else if function == "aca" {
+	case "aca":
 		return s.aca(stub, args)
+	default:
+		return shim.Error("no such method")
 	}
-	//如果用户意图不符合如上，进行错误提示
-	return shim.Error("非法操作，指定的函数名无效")
+	//if function == "createRequest" {
+	//	return s.createRequest(stub, args)
+	//} else if function == "updateRequest" {
+	//	return s.updateRequest(stub, args)
+	//} else if function == "cancelRequest" {
+	//	return s.cancelRequest(stub, args)
+	//} else if function == "confirmOrder" { //确认大家是否参加活动，暂时没有这个函数
+	//	return s.confirmOrder(stub, args)
+	//} else if function == "initLedger" {
+	//	return s.initLedger(stub)
+	//} else if function == "aca" {
+	//	return s.aca(stub, args)
+	//}
+	////如果用户意图不符合如上，进行错误提示
+	//return shim.Error("error function")
 }
 
 //接口方法：发布请求
-func (s *SmartContract) registerToActivity(stub shim.ChaincodeStubInterface, args []string) sc.Response {
-	if len(args) != 3 {
-		return shim.Error("Incorrect number of arguments. Expecting 3")
+func (s *SmartContract) createRequest(stub shim.ChaincodeStubInterface, args []string) sc.Response {
+	if len(args) != 4 {
+		return shim.Error("Incorrect number of arguments. Expecting 4")
 	}
-	var owner, _ = GetCertAttribute2(stub)
-	participant_number = participant_number + 1
-	var request = Request{ID: strconv.Itoa(participant_number), Location: args[0], RegisterTime: args[1], Deposit: args[2],  State: "0", Owner: owner, ResultID: ""}
+	existRequest, _ := stub.GetState(args[0])
+	if existRequest != nil {
+		return shim.Error("Exist Request. ")
+	}
 
+	var owner, _ = GetCertAttribute2(stub)
+	var request = Request{ID: args[0], Location: args[1], RegisterTime: time.Now().Unix(), ActivityTime: args[2], Deposit: args[3], State: "0", Owner: owner, ResultID: ""}
 	requestAsBytes, _ := json.Marshal(request)
+
 	stub.PutState(args[0], requestAsBytes)
 
-	return shim.Success(nil)
+	var payload bytes.Buffer
+	payload.WriteString("ID:")
+	payload.WriteString(args[0])
+	payload.WriteString("  register success")
+
+	// 参与
+	applicantNum = applicantNum + 1
+	return shim.Success(payload.Bytes())
 }
 
 //接口方法：修改请求
 func (s *SmartContract) updateRequest(stub shim.ChaincodeStubInterface, args []string) sc.Response {
-	if len(args) != 3 {
-		return shim.Error("Incorrect number of arguments. Expecting 3")
+	if len(args) != 4 {
+		return shim.Error("Incorrect number of arguments. Expecting 4")
 	}
 	//判断该请求是否是该用户所有
 	//获取该请求真实所有者
@@ -148,7 +205,8 @@ func (s *SmartContract) updateRequest(stub shim.ChaincodeStubInterface, args []s
 	requestAsBytes, err := stub.GetState(requestID)
 	if err != nil {
 		return shim.Error("Failed to get request:" + err.Error())
-	} else if requestAsBytes == nil {
+	}
+	if requestAsBytes == nil {
 		return shim.Error("request does not exist")
 	}
 	request := Request{}
@@ -160,14 +218,18 @@ func (s *SmartContract) updateRequest(stub shim.ChaincodeStubInterface, args []s
 	//获取该交易用户名
 	var user, _ = GetCertAttribute2(stub)
 	if owner != user {
-		return shim.Error("您不拥有该请求")
+		return shim.Error("Error User")
 	}
-	request = Request{ID: args[0], Location: args[1], StartTime: args[2], Owner: owner, Deposit: args[4], State: "0", ResultID: ""}
-	request.State = "2"
+	request = Request{ID: args[0], Location: args[1], ActivityTime: args[2], Deposit: args[3], Owner: owner, State: "0", ResultID: ""}
 	requestAsBytes, _ = json.Marshal(request)
 	stub.PutState(args[0], requestAsBytes)
 
-	return shim.Success(nil)
+	var payload bytes.Buffer
+	payload.WriteString("ID:")
+	payload.WriteString(args[0])
+	payload.WriteString("  update success")
+
+	return shim.Success(payload.Bytes())
 }
 
 //接口方法：取消请求
@@ -200,67 +262,89 @@ func (s *SmartContract) cancelRequest(stub shim.ChaincodeStubInterface, args []s
 		return shim.Error("请求已被撮合，无法取消")
 	}
 
-	// var request = Request{ID: args[0], Location: args[1], StartTime: args[2], EndTime: args[3], Owner: owner, Deposit: args[4], State: 0, ResultID: ""}
-	request.State = "2"
-	requestAsBytes, _ = json.Marshal(request)
-	//	stub.PutState(args[0], requestAsBytes)
-	//
-	//	return shim.Success(nil)
-	//}
-	//
-	//func (s *SmartContract) confirmOrder(stub shim.ChaincodeStubInterface, args []string) sc.Response {
-	//	return shim.Success(nil)
-	//}
-	//
-	////接口方法：活动结束，对撮合完成结果进行处理（人工评，根据位置自动评）
-	//
-	////重写shim.ChaincodeStubInterface接口的 Query 方法
-	//func (s *SmartContract) Query(stub shim.ChaincodeStubInterface) sc.Response {
-	// 获取用户意图与参数
-	//function, args := stub.GetFunctionAndParameters()
-	//fmt.Println("Query is running " + function)
-	////	//根据用户意图判断使用何种实现函数
-	//if function == "queryMyRequest" {
-	//	return s.queryMyRequest(stub)
-	//} else if function == "querySameRequestPeopleNumber" { //查询当前有多少人报名（根据报名人数和报名时间过滤）
-	//	return s.querySameRequestPeopleNumber(stub, args)
-	//} else if function == "querySameRequestAverageDeposit" { //查询押金平均值（根据报名人数和报名时间过滤）
-	//	return s.querySameRequestAverageDeposit(stub, args)
-	//} else if function == "queryUser" { //接口方法：用来测试查询用户名称
-	//	return s.queryUser(stub)
-	//}
-	//如果用户意图不符合如上，进行错误提示
-	return shim.Error("非法操作，指定的函数名无效")
+	stub.DelState(args[0])
+
+	var payload bytes.Buffer
+	payload.WriteString("ID:")
+	payload.WriteString(args[0])
+	payload.WriteString("cancel success")
+
+	return shim.Success(payload.Bytes())
 }
 
+func (s *SmartContract) showAllRequest(stub shim.ChaincodeStubInterface) sc.Response {
+
+	requestAsBytes, err := queryRequestValueByKeyWithRegex(stub, []string{"ActivityTime", ""})
+	if err != nil {
+		return shim.Error("Failed to get request:" + err.Error())
+	} else if requestAsBytes == nil {
+		return shim.Error("request does not exist")
+	}
+	return shim.Success(requestAsBytes)
+}
+
+// 活动结束后用于确认请求
 func (s *SmartContract) confirmOrder(stub shim.ChaincodeStubInterface, args []string) sc.Response {
 	return shim.Success(nil)
 }
 
-////查询我的所有请求
-//func (s *SmartContract) queryMyRequest(APIstub shim.ChaincodeStubInterface) sc.Response {
-//
-//	var owner, _ = GetCertAttribute2(APIstub)
-//	queryString := fmt.Sprintf("{\"selector\":{\"Owner\":\"%s\"}}", owner)
-//
-//	queryResults, err := getQueryResultForQueryString(stub, queryString)
-//	if err != nil {
-//		return shim.Error(err.Error())
-//	}
-//	return shim.Success(queryResults)
-//}
-//
-////查询相同请求人数
+// 查询我的所有请求
+func (s *SmartContract) queryMyRequest(stub shim.ChaincodeStubInterface) sc.Response {
+
+	var owner, _ = GetCertAttribute2(stub)
+	queryString := fmt.Sprintf("{\"selector\":{\"Owner\":\"%s\"}}", owner)
+
+	queryResults, err := getQueryResultForQueryString(stub, queryString)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	return shim.Success(queryResults)
+}
+
+func (s *SmartContract) getAllLocationsToDapp(stub shim.ChaincodeStubInterface) sc.Response{
+	return shim.Success(nil)
+}
+
+// 报名的所有地点
+func getAllLocations(stub shim.ChaincodeStubInterface) ([]byte, error) {
+
+	//resultsIterator, err := stub.GetQueryResult(queryString)
+	//if err != nil {
+	//	return nil, err
+	//}
+	//defer resultsIterator.Close()
+	//
+	//buffer, err := constructQueryResponseFromIterator(resultsIterator)
+	//if err != nil {
+	//	return nil, err
+	//}
+	//
+	//fmt.Printf("- getQueryResultForQueryString queryResult:\n%s\n", buffer.String())
+	//
+	//return buffer.Bytes(), nil
+	//requestAsBytes, err := queryRequestValueByKeyWithRegex(stub, []string{"Location", ""})
+	//if err != nil {
+	//	return nil, errors.New("Failed to get request:" + err.Error())
+	//} else if requestAsBytes == nil {
+	//	return nil, errors.New("request does not exist")
+	//}
+	//request := Request{}
+	//err = json.Unmarshal(requestAsBytes, &request) //unmarshal it aka JSON.parse()
+	//if err != nil {
+	//	return nil, errors.New("Failed to Unmarshal:" + err.Error())
+	//}
+	return nil,nil
+}
+
+// 查询相同请求人数
 //func (s *SmartContract) querySameRequestPeopleNumber(stub shim.ChaincodeStubInterface, args []string) sc.Response {
 //
-//	queryResults, err := querySameRequestByRequestID(stub, args)
-//	if err != nil {
-//		return shim.Error(err.Error())
-//	}
+//	queryResults := s.queryRequestValueByKey(stub, args)
 //
 //	//获取人数
-//	return shim.Success(queryResults)
+//	return shim.Success(queryResults.Payload)
 //}
+
 //
 ////查询押金平均值
 //func (s *SmartContract) querySameRequestAverageDeposit(stub shim.ChaincodeStubInterface, args []string) sc.Response {
@@ -323,70 +407,89 @@ func GetCertAttribute2(stub shim.ChaincodeStubInterface) (string, error) {
 	return uname, nil
 }
 
-//工具方法：查询所有相同请求根据报名人数和报名时间过滤）
-//func (s *SmartContract) querySameRequestByRequestID(stub shim.ChaincodeStubInterface, args []string) sc.Response {
-//
-//	if len(args) < 1 {
-//		return shim.Error("Incorrect number of arguments. Expecting 1")
-//	}
-//
-//	requestID := args[0]
-//
-//	queryString := fmt.Sprintf("{\"selector\":{\"RequestID\":\"%s\"}}", requestID)
-//
-//	requestAsBytes, err := getQueryResultForQueryString(stub, queryString)
-//	if err != nil {
-//		return shim.Error("Failed to get request:" + err.Error())
-//	} else if requestAsBytes == nil {
-//		return shim.Error("request does not exist")
-//	}
-//	request := Request{}
-//	err = json.Unmarshal(requestAsBytes, &request) //unmarshal it aka JSON.parse()
-//	if err != nil {
-//		return shim.Error(err.Error())
-//	}
-//	//owner := request.Owner
-//
-//	queryString = fmt.Sprintf("{\"selector\":{\"Location\":\"%s\",\"StartTime\":\"%s\",\"EndTime\":\"%s\"}}", request.Location, request.StartTime, request.EndTime)
-//
-//	queryResults, err := getQueryResultForQueryString(stub, queryString)
-//	if err != nil {
-//		return shim.Error(err.Error())
-//	}
-//
-//	return shim.Success(queryResults)
-//}
+//工具方法：查询state db中的key和value
+func queryRequestValueByKey(stub shim.ChaincodeStubInterface, args []string) ([]byte, error) {
+	if len(args) != 2 {
+		return nil, errors.New("Incorrect number of arguments. Expecting 2")
+	}
+	queryString := fmt.Sprintf("{\"selector\":{\"%s\":\"%s\"}}}", args[0], args[1])
+	requestAsBytes, err := getQueryResultForQueryString(stub, queryString)
+
+	return requestAsBytes, err
+}
+
+//工具方法：查询state db中的key和values，使用正则表达式
+func queryRequestValueByKeyWithRegex(stub shim.ChaincodeStubInterface, args []string) ([]byte, error) {
+	if len(args) != 2 {
+		return nil, errors.New("Incorrect number of arguments. Expecting 2")
+	}
+	queryString := fmt.Sprintf("{\"selector\":{\"%s\":{\"$regex\":\"%s\"}}}", args[0], args[1])
+	requestAsBytes, err := getQueryResultForQueryString(stub, queryString)
+
+	return requestAsBytes, err
+}
 
 // =========================================================================================
 // getQueryResultForQueryString executes the passed in query string.
 // Result set is built and returned as a byte array containing the JSON results.
 //工具方法：过滤查询
 // =========================================================================================
-//func getQueryResultForQueryString(stub shim.ChaincodeStubInterface, queryString string) ([]byte, error) {
-//
-//	fmt.Printf("- getQueryResultForQueryString queryString:\n%s\n", queryString)
-//
-//	resultsIterator, err := stub.GetQueryResult(queryString)
-//	if err != nil {
-//		return nil, err
-//	}
-//	defer resultsIterator.Close()
-//
-//	buffer, err := constructQueryResponseFromIterator(resultsIterator)
-//	if err != nil {
-//		return nil, err
-//	}
-//
-//	fmt.Printf("- getQueryResultForQueryString queryResult:\n%s\n", buffer.String())
-//
-//	return buffer.Bytes(), nil
-//}
+func getQueryResultForQueryString(stub shim.ChaincodeStubInterface, queryString string) ([]byte, error) {
+
+	fmt.Printf("- getQueryResultForQueryString queryString:\n%s\n", queryString)
+
+	resultsIterator, err := stub.GetQueryResult(queryString)
+	if err != nil {
+		return nil, err
+	}
+	defer resultsIterator.Close()
+
+	buffer, err := constructQueryResponseFromIterator(resultsIterator)
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Printf("- getQueryResultForQueryString queryResult:\n%s\n", buffer.String())
+
+	return buffer.Bytes(), nil
+}
+
+func constructQueryResponseFromIterator(resultsIterator shim.StateQueryIteratorInterface) (*bytes.Buffer, error) {
+	// buffer is a JSON array containing QueryResults
+	var buffer bytes.Buffer
+	buffer.WriteString("[")
+
+	bArrayMemberAlreadyWritten := false
+	for resultsIterator.HasNext() {
+		queryResponse, err := resultsIterator.Next()
+		if err != nil {
+			return nil, err
+		}
+		// Add a comma before array members, suppress it for the first array member
+		if bArrayMemberAlreadyWritten == true {
+			buffer.WriteString(",")
+		}
+		buffer.WriteString("{\"Key\":")
+		buffer.WriteString("\"")
+		buffer.WriteString(queryResponse.Key)
+		buffer.WriteString("\"")
+
+		buffer.WriteString(", \"Record\":")
+		// Record is a JSON object, so we write as-is
+		buffer.WriteString(string(queryResponse.Value))
+		buffer.WriteString("}")
+		bArrayMemberAlreadyWritten = true
+	}
+	buffer.WriteString("]")
+
+	return &buffer, nil
+}
 
 //工具方法：撮合算法
 //工具方法：新建撮合
 
 //根据时间、空间等约束，将满足条件的报名者筛选出来（应是按时间、地点划分成的多组，先只考虑一组报名者）
-func filter() {
+func test() {
 	//模拟初始数据
 	deposit = append(deposit, 10, 12, 3, 4, 8, 16, 7, 5, 9, 10, 11, 15, 13, 14, 15, 13, 15, 16, 16, 18)
 	timeValue = append(timeValue, 1, 2, 3, 3, 3, 2, 0, 1, 2, 2, 0, 3, 1, 1, 2, 4, 1, 0, 2, 3)
@@ -398,8 +501,94 @@ func filter() {
 	fmt.Println(depositAndTime)
 }
 
+func (s *SmartContract) filter(stub shim.ChaincodeStubInterface, args []string) sc.Response {
+	err := getAllActivityTime(stub)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	requestAsBytes, err := stub.GetStateByRange("1", "999")
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	defer requestAsBytes.Close()
+	for k, v := range ActivityTimeClass {
+		err = initUserRegisterInfo(requestAsBytes, k, v)
+	}
+
+	var payload bytes.Buffer
+	payload.WriteString("Match Make Success")
+	return shim.Success(payload.Bytes())
+}
+
+// 根据活动时间对报名用户进行分类
+func getAllActivityTime(stub shim.ChaincodeStubInterface) error {
+	requestAsBytes, err := stub.GetStateByRange("1", "999")
+
+	if err != nil {
+		return err
+	}
+	defer requestAsBytes.Close()
+
+	for requestAsBytes.HasNext() {
+		singleRequest, err := requestAsBytes.Next()
+		if err != nil {
+			return err
+		}
+		request := Request{}
+		err = json.Unmarshal(singleRequest.Value, &request)
+		if err != nil {
+			return err
+		}
+		IDs := []string{}
+		IDs = ActivityTimeClass[request.ActivityTime]
+		IDs = append(IDs, request.ID)
+
+		ActivityTimeClass[request.ActivityTime] = IDs
+	}
+
+	return nil
+}
+
+// 进行一次撮合，初始化撮合需要使用的参数
+func initUserRegisterInfo(requestAsBytes shim.StateQueryIteratorInterface, activityTime string, IDs []string) error {
+	serialNum := 0
+	for requestAsBytes.HasNext() {
+		singleRequest, err := requestAsBytes.Next()
+		if err != nil {
+			return err
+		}
+
+		idToSequenceNumber[singleRequest.Key] = serialNum
+		serialNum++
+
+		request := Request{}
+		err = json.Unmarshal(singleRequest.Value, &request)
+		if err != nil {
+			return err
+		}
+
+		strDeposit, err := strconv.ParseFloat(request.Deposit, 64)
+		if err != nil {
+			return err
+		}
+
+		// 保证金
+		deposit = append(deposit, strDeposit)
+
+		// 时间价值
+		tV := time.Now().Unix() - request.RegisterTime
+		timeValue = append(timeValue, float64(tV))
+	}
+
+	return nil
+}
+
 //蚁群算法
 func (s *SmartContract) aca(stub shim.ChaincodeStubInterface, args []string) sc.Response {
+
+	if deposit == nil {
+		return shim.Error("No Enough participants")
+	}
 
 	var payload bytes.Buffer
 
