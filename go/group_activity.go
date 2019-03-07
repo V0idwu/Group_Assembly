@@ -19,6 +19,7 @@ import (
 	sc "github.com/hyperledger/fabric/protos/peer"
 )
 
+//测试git
 // --------------------------------------------
 // 业务全局变量
 // --------------------------------------------
@@ -26,6 +27,7 @@ var allParticipantsInActivity int = 0             // 所有参与人数
 var idToSequenceNumber = make(map[string]int)     // 用户ID对应到撮合时的序号
 var ActivityTimeClass = make(map[string][]string) // 按照注册时间分类后的结果
 
+//测试git
 // --------------------------------------------
 // 蚁群算法的全局常量
 // --------------------------------------------
@@ -78,6 +80,12 @@ type Result struct {
 	Owners       []string
 	ActivityTime string
 	CompleteTime string //撮合完成时间
+=======
+	ID           []string `json:"id"`
+	Requests     []Request
+	GenerateTime string `json:"generateTime"` //撮合产生时间
+	CompleteTime string `json:"completeTime"` //撮合完成时间
+>>>>>>> origin/master
 }
 
 // 工具方法：类型转换
@@ -177,6 +185,9 @@ func (s *SmartContract) createRequest(stub shim.ChaincodeStubInterface, args []s
 	if existRequest != nil {
 		return shim.Error("Exist Request. ")
 	}
+
+
+
 
 	var owner, _ = GetCertAttribute2(stub)
 	var request = Request{ID: args[0], Location: args[1], RegisterTime: time.Now().Unix(), ActivityTime: args[2], Deposit: args[3], State: "0", Owner: owner, ResultID: ""}
