@@ -6,8 +6,9 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
-	"github.com/pkg/errors"
+	//"github.com/pkg/errors"
 	"math"
 	"math/rand"
 	"reflect"
@@ -362,7 +363,7 @@ func getAllRequestValueNum(stub shim.ChaincodeStubInterface, args string) (map[s
 		if err != nil {
 			return nil, err
 		}
-		valueNum[request.Location] ++
+		valueNum[request.Location]++
 	}
 	return valueNum, nil
 }
@@ -466,22 +467,22 @@ func queryRequestValueByTwoKey(stub shim.ChaincodeStubInterface, args []string) 
 // =========================================================================================
 // 工具方法：富文本查询
 // =========================================================================================
-	func getQueryResultForQueryString(stub shim.ChaincodeStubInterface, queryString string) ([]byte, error) {
+func getQueryResultForQueryString(stub shim.ChaincodeStubInterface, queryString string) ([]byte, error) {
 
-		fmt.Printf("- getQueryResultForQueryString queryString:\n%s\n", queryString)
+	fmt.Printf("- getQueryResultForQueryString queryString:\n%s\n", queryString)
 
-		resultsIterator, err := stub.GetQueryResult(queryString)
-		if err != nil {
-			return nil, err
-		}
-		defer resultsIterator.Close()
+	resultsIterator, err := stub.GetQueryResult(queryString)
+	if err != nil {
+		return nil, err
+	}
+	defer resultsIterator.Close()
 
-		buffer, err := constructQueryResponseFromIterator(resultsIterator)
-		if err != nil {
-			return nil, err
-		}
+	buffer, err := constructQueryResponseFromIterator(resultsIterator)
+	if err != nil {
+		return nil, err
+	}
 
-		fmt.Printf("- getQueryResultForQueryString queryResult:\n%s\n", buffer.String())
+	fmt.Printf("- getQueryResultForQueryString queryResult:\n%s\n", buffer.String())
 
 	return buffer.Bytes(), nil
 }
@@ -535,11 +536,10 @@ func (s *SmartContract) doMatchMaker(stub shim.ChaincodeStubInterface, args []st
 	//	payload.WriteString("; ")
 	//}
 	payload.WriteString("depositAndTime: ")
-	for j:= 0; j< len(depositAndTime); j++{
-		payload.WriteString(strconv.FormatFloat(depositAndTime[j], 'f',-1,64))
+	for j := 0; j < len(depositAndTime); j++ {
+		payload.WriteString(strconv.FormatFloat(depositAndTime[j], 'f', -1, 64))
 		payload.WriteString(", ")
 	}
-
 
 	return shim.Success(payload.Bytes())
 }
