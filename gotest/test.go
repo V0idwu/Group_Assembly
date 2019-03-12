@@ -11,30 +11,38 @@ func timeSub(t1, t2 time.Time) int {
 	t2 = t2.UTC().Truncate(24 * time.Hour)
 	return int(t1.Sub(t2).Hours() / 24)
 }
+
 func main() {
+
+	Timeformat := "2006/01/02 15:04:05"
 	curTime := time.Now()
-	//formatTimeStr := "2019-03-01 00:00:00"
-	keyTime := "2019/3/1/2"
-	times := strings.Split(keyTime, "/")
-
-	formatTimeStr := strings.Join(times[:3], "-0") + " 00:00:00"
-
-	fmt.Println(formatTimeStr)
-	standardActivityTime, err := time.Parse("2006-01-02 15:04:05", formatTimeStr)
-
-	//formatTime, err := time.Parse("2006-01-02 15:04:05", formatTimeStr)
-
-	if err != nil {
-
-		fmt.Println(err)
-
-	}
-
-	//sub := timeSub(standardActivityTime, curTime)
+	//times := strings.Split("2019/03/14", "/")
+	//formatTimeStr := strings.Join(times[:3], "-") + " 00:00:00"
 	//
-	//fmt.Printf("%T, %v", sub, sub)
-	fmt.Println(curTime.Unix())
-	fmt.Println(standardActivityTime.Unix())
-	diff := float64(curTime.Unix()-standardActivityTime.Unix())/1000000.0
-	fmt.Println(diff)
+	//fmt.Printf("%T, %v\n",formatTimeStr,formatTimeStr)
+	//
+	//standardActivityTime, err := time.Parse(Timeformat, formatTimeStr)
+	//
+	//fmt.Printf("%T, %v\n", standardActivityTime, standardActivityTime)
+	//if err != nil {
+	//	return
+	//}
+	//diff := timeSub(standardActivityTime, curTime)
+	//fmt.Print(diff)
+
+	times := strings.Split("2019/03/11/1", "/")
+	keyTime := "2019/03/11/1"
+	//formatTimeStr := strings.Join(times[:3], "/") + " 00:00:00"
+	formatTimeStr := keyTime[:len(keyTime)-2] + " 00:00:00"
+	standardActivityTime, _ := time.Parse(Timeformat, formatTimeStr)
+	//if err != nil {
+	//	return
+	//}
+
+	fmt.Println(times)
+	fmt.Println(formatTimeStr)
+	fmt.Println(standardActivityTime)
+
+	diff := timeSub(standardActivityTime, curTime)
+	fmt.Print(diff)
 }
