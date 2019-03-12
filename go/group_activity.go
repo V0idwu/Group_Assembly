@@ -8,12 +8,13 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"strings"
+
 	//"github.com/pkg/errors"
 	"math"
 	"math/rand"
 	"reflect"
 	"strconv"
-	"strings"
 	"time"
 	"unsafe"
 
@@ -27,6 +28,8 @@ import (
 var allParticipantsInActivity int = 0         // 所有参与人数
 var idToSequenceNumber = make(map[int]string) // 用户ID对应到撮合时的序号
 
+//var diffTime string
+//var activityTime = make(map[string]int)
 // --------------------------------------------
 // 蚁群算法的全局常量
 // --------------------------------------------
@@ -65,11 +68,23 @@ type Request struct {
 	ID           string
 	Location     string //位置
 	RegisterTime int64  //客户端选择某一个上午，计算出那个上午的开始时间，再发给链码，这样方便以后修改时间选择策略
-	ActivityTime string
+	StartTime    string
+	EndTime      string
 	Deposit      string //押金
 	State        string //被撮合状态，0未撮合，1已撮合还未到参加活动时间，2取消戳和，3已撮合被判断未参加活动，4已撮合被判断已参加活动
 	Owner        string
 	ResultID     string //被撮合到同一组别的用户会被分配一个相同的uid
+}
+
+type Resouce struct {
+	ID            string
+	Spot          string
+	County        string
+	District      string
+	City          string
+	Capacity      int
+	BusinnessHour []string
+	Duration      int
 }
 
 // 在state db中使用GenerateTime作为result的主键
@@ -77,7 +92,7 @@ type Result struct {
 	GenerateTime string //撮合产生时间
 	IDs          []string
 	Owners       []string
-	ActivityTime string
+	StartTime    string
 	CompleteTime string //撮合完成时间
 }
 
@@ -121,9 +136,13 @@ func (s *SmartContract) Init(stub shim.ChaincodeStubInterface) sc.Response {
 }
 
 // 初始化账本方法
-func (s *SmartContract) initLedger(stub shim.ChaincodeStubInterface) sc.Response {
-	test()
-	return shim.Success(nil)
+func (s *SmartContract) initLedger(stub shim.ChaincodeStubInterface, args []string) sc.Response {
+	queryString := fmt.Sprintf("{\"selector\":{\"Location\":\"%s\",\"StartTime\":\"%s\"}}", args[0], args[1])
+	requestAsBytes, err := getQueryResultForQueryString(stub, queryString)
+	if err != nil {
+		shim.Error(err.Error())
+	}
+	return shim.Success(requestAsBytes)
 }
 
 //重写shim.ChaincodeStubInterface接口的 Invoke 方法
@@ -147,7 +166,7 @@ func (s *SmartContract) Invoke(stub shim.ChaincodeStubInterface) sc.Response {
 	case "getAllLocationsToDapp":
 		return s.getAllLocationsToDapp(stub)
 	case "initLedger":
-		return s.initLedger(stub)
+		return s.initLedger(stub, args)
 	case "doMatchMaker":
 		return s.doMatchMaker(stub, args)
 	default:
@@ -167,7 +186,7 @@ func (s *SmartContract) createRequest(stub shim.ChaincodeStubInterface, args []s
 	}
 
 	var owner, _ = GetCertAttribute2(stub)
-	var request = Request{ID: args[0], Location: args[1], RegisterTime: time.Now().Unix(), ActivityTime: args[2], Deposit: args[3], State: "0", Owner: owner, ResultID: ""}
+	var request = Request{ID: args[0], Location: args[1], RegisterTime: time.Now().Unix(), StartTime: args[2], Deposit: args[3], State: "0", Owner: owner, ResultID: ""}
 	requestAsBytes, _ := json.Marshal(request)
 
 	stub.PutState(args[0], requestAsBytes)
@@ -175,9 +194,9 @@ func (s *SmartContract) createRequest(stub shim.ChaincodeStubInterface, args []s
 	var payload bytes.Buffer
 	payload.WriteString("ID:")
 	payload.WriteString(args[0])
-	payload.WriteString("  register success")
+	payload.WriteString("  Register Success")
 
-	// 参与
+	// 参与人数
 	applicantNum = applicantNum + 1
 	return shim.Success(payload.Bytes())
 }
@@ -192,10 +211,10 @@ func (s *SmartContract) updateRequest(stub shim.ChaincodeStubInterface, args []s
 	requestID := args[0]
 	requestAsBytes, err := stub.GetState(requestID)
 	if err != nil {
-		return shim.Error("Failed to get request:" + err.Error())
+		return shim.Error("Failed to Get Request:" + err.Error())
 	}
 	if requestAsBytes == nil {
-		return shim.Error("request does not exist")
+		return shim.Error("Request does not Exist")
 	}
 	request := Request{}
 	err = json.Unmarshal(requestAsBytes, &request) //unmarshal it aka JSON.parse()
@@ -208,14 +227,18 @@ func (s *SmartContract) updateRequest(stub shim.ChaincodeStubInterface, args []s
 	if owner != user {
 		return shim.Error("Error User")
 	}
-	request = Request{ID: args[0], Location: args[1], ActivityTime: args[2], Deposit: args[3], Owner: owner, State: "0", ResultID: ""}
+	if request.State == "0" {
+		return shim.Error("Can not Update. You has been Arranged into an Activity")
+	}
+
+	request = Request{ID: args[0], Location: args[1], RegisterTime: time.Now().Unix(), StartTime: args[2], Deposit: args[3], Owner: owner, State: "0", ResultID: ""}
 	requestAsBytes, _ = json.Marshal(request)
 	stub.PutState(args[0], requestAsBytes)
 
 	var payload bytes.Buffer
 	payload.WriteString("ID:")
 	payload.WriteString(args[0])
-	payload.WriteString("  update success")
+	payload.WriteString("  Update Success")
 
 	return shim.Success(payload.Bytes())
 }
@@ -243,11 +266,11 @@ func (s *SmartContract) cancelRequest(stub shim.ChaincodeStubInterface, args []s
 	//获取该交易用户名
 	var user, _ = GetCertAttribute2(stub)
 	if owner != user {
-		return shim.Error("您不拥有该请求")
+		return shim.Error("Error User")
 	}
 	//判断是否已被撮合
 	if request.State != "0" {
-		return shim.Error("请求已被撮合，无法取消")
+		return shim.Error("Can not Cancel. You has been Arranged into an Activity")
 	}
 
 	stub.DelState(args[0])
@@ -255,14 +278,14 @@ func (s *SmartContract) cancelRequest(stub shim.ChaincodeStubInterface, args []s
 	var payload bytes.Buffer
 	payload.WriteString("ID:")
 	payload.WriteString(args[0])
-	payload.WriteString("cancel success")
+	payload.WriteString("  Cancel Success")
 
 	return shim.Success(payload.Bytes())
 }
 
 func (s *SmartContract) showAllRequest(stub shim.ChaincodeStubInterface) sc.Response {
 
-	requestAsBytes, err := queryRequestValueByKeyWithRegex(stub, []string{"ActivityTime", ""})
+	requestAsBytes, err := queryRequestValueByKeyWithRegex(stub, []string{"StartTime", ""})
 	if err != nil {
 		return shim.Error("Failed to get request:" + err.Error())
 	} else if requestAsBytes == nil {
@@ -363,7 +386,15 @@ func getAllRequestValueNum(stub shim.ChaincodeStubInterface, args string) (map[s
 		if err != nil {
 			return nil, err
 		}
-		valueNum[request.Location]++
+		switch args {
+		case "Location":
+			valueNum[request.Location]++
+		case "StartTime":
+			valueNum[request.StartTime]++
+		default:
+			return nil, errors.New("No such value In DB")
+		}
+
 	}
 	return valueNum, nil
 }
@@ -384,7 +415,7 @@ func getAllRequestValueNum(stub shim.ChaincodeStubInterface, args string) (map[s
 // 	}
 // 	attrString := string(attr)
 // 	return attrString, nil
-// }
+// }【【
 
 //工具方法：获取证书属性"username" 方法来自于：http://www.cnblogs.com/studyzy/p/7360733.html
 func GetCertAttribute2(stub shim.ChaincodeStubInterface) (string, error) {
@@ -439,7 +470,7 @@ func queryRequestValueByTwoKey(stub shim.ChaincodeStubInterface, args []string) 
 	if len(args) != 4 {
 		return nil, errors.New("Incorrect number of arguments. Expecting 4")
 	}
-	queryString := fmt.Sprintf("{\"selector\":{\"%s\":\"%s\"},{\"%s\":\"%s\"}}", args[0], args[1], args[2], args[3])
+	queryString := fmt.Sprintf("{\"selector\":{\"%s\":\"%s\",\"%s\":\"%s\"}}", args[0], args[1], args[2], args[3])
 	resultsIterator, err := stub.GetQueryResult(queryString)
 	if err != nil {
 		return nil, err
@@ -530,16 +561,23 @@ func (s *SmartContract) doMatchMaker(stub shim.ChaincodeStubInterface, args []st
 	}
 
 	var payload bytes.Buffer
-	//for i := 0 ; i< len(satisMaxArr) ; i++{
-	//	payload.WriteString("1 satisMax = ")
-	//	payload.WriteString(strconv.FormatFloat(satisMaxArr[i], 'f', -1, 64))
-	//	payload.WriteString("; ")
-	//}
-	payload.WriteString("depositAndTime: ")
-	for j := 0; j < len(depositAndTime); j++ {
-		payload.WriteString(strconv.FormatFloat(depositAndTime[j], 'f', -1, 64))
-		payload.WriteString(", ")
+	for i := 0; i < len(satisMaxArr); i++ {
+		payload.WriteString(strconv.Itoa(i + 1))
+		payload.WriteString(" satisMax = ")
+		payload.WriteString(strconv.FormatFloat(satisMaxArr[i], 'f', -1, 64))
+		payload.WriteString("; ")
 	}
+
+	//payload.WriteString("diffTime: ")
+	//payload.WriteString(diffTime)
+
+	//for k, v := range StartTime {
+	//	payload.WriteString("StartTime: ")
+	//	payload.WriteString(k)
+	//	payload.WriteString(", Num: ")
+	//	payload.WriteString(strconv.Itoa(v))
+	//	payload.WriteString(" ; ")
+	//}
 
 	return shim.Success(payload.Bytes())
 }
