@@ -165,6 +165,8 @@ func (s *SmartContract) Invoke(stub shim.ChaincodeStubInterface) sc.Response {
 		return s.showAllRequest(stub)
 	case "getAllLocationsToDapp":
 		return s.getAllLocationsToDapp(stub)
+	case "queryMyRequest":
+		return s.queryMyRequest(stub)
 	case "initLedger":
 		return s.initLedger(stub, args)
 	case "doMatchMaker":
