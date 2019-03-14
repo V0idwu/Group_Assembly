@@ -66,34 +66,49 @@ type SmartContract struct {
 
 type Request struct {
 	ID           string
-	Location     string //位置
+	Location     string //位置 zhangjiang Town
 	RegisterTime int64  //客户端选择某一个上午，计算出那个上午的开始时间，再发给链码，这样方便以后修改时间选择策略
+	ActivityDate string
 	StartTime    string
 	EndTime      string
-	Deposit      string //押金
-	State        string //被撮合状态，0未撮合，1已撮合还未到参加活动时间，2取消戳和，3已撮合被判断未参加活动，4已撮合被判断已参加活动
+	Deposit      int //押金
+	// 报名的撮合状态
+	// 0 进入matchgroup数组，还没有进行过第一次撮合
+	// 1 停留在已撮合还未到参加活动时间的matchgroup组内，即撮合成功
+	// 2 未撮合成功
+	// 
+	State        string
+	ActivityType string
 	Owner        string
-	ResultID     string //被撮合到同一组别的用户会被分配一个相同的uid
+	//ResultID     string //被撮合到同一组别的用户会被分配一个相同的uid
 }
 
-type Resouce struct {
-	ID            string
-	Spot          string
-	County        string
-	District      string
-	City          string
-	Capacity      int
-	BusinnessHour []string
-	Duration      int
-}
-
-// 在state db中使用GenerateTime作为result的主键
-type Result struct {
-	GenerateTime string //撮合产生时间
-	IDs          []string
-	Owners       []string
+type Resource struct {
+	SpotID       string // 场地编号
+	ActivityType string
+	Spot         string
+	County       string
+	District     string
+	City         string
+	Capacity     int
+	ActivityDate string // 固有资源，该项默认为"tbd"
 	StartTime    string
-	CompleteTime string //撮合完成时间
+	EndTime      string
+	Duration     int
+}
+
+type MatchGroup struct {
+	ActivityDate      string // 活动日期
+	Area              string // Spot + SpotID + ActivityDate + S
+	StartTime         string
+	EndTime           string
+	Duration          int
+	// MatchGroup的撮合状态
+	// 1 撮合成功
+	// 2 未撮合成功
+	State             string
+	Requests          []Request
+	ResourcesInstance Resource // 加入活动日期信息
 }
 
 // 工具方法：类型转换
@@ -186,7 +201,11 @@ func (s *SmartContract) createRequest(stub shim.ChaincodeStubInterface, args []s
 	}
 
 	var owner, _ = GetCertAttribute2(stub)
-	var request = Request{ID: args[0], Location: args[1], RegisterTime: time.Now().Unix(), StartTime: args[2], Deposit: args[3], State: "0", Owner: owner, ResultID: ""}
+	deposit, err := strconv.Atoi(args[3])
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	var request = Request{ID: args[0], Location: args[1], RegisterTime: time.Now().Unix(), StartTime: args[2], Deposit: deposit, State: "0", Owner: owner}
 	requestAsBytes, _ := json.Marshal(request)
 
 	stub.PutState(args[0], requestAsBytes)
@@ -230,8 +249,11 @@ func (s *SmartContract) updateRequest(stub shim.ChaincodeStubInterface, args []s
 	if request.State == "0" {
 		return shim.Error("Can not Update. You has been Arranged into an Activity")
 	}
-
-	request = Request{ID: args[0], Location: args[1], RegisterTime: time.Now().Unix(), StartTime: args[2], Deposit: args[3], Owner: owner, State: "0", ResultID: ""}
+	deposit, err := strconv.Atoi(args[3])
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	request = Request{ID: args[0], Location: args[1], RegisterTime: time.Now().Unix(), StartTime: args[2], Deposit: deposit, Owner: owner, State: "0"}
 	requestAsBytes, _ = json.Marshal(request)
 	stub.PutState(args[0], requestAsBytes)
 
@@ -661,7 +683,7 @@ func initUserRegisterInfo(requests []Request) error {
 		idToSequenceNumber[serialNum] = v.ID
 		serialNum++
 		//
-		strDeposit, err := strconv.ParseFloat(v.Deposit, 64)
+		strDeposit, err := strconv.ParseFloat(strconv.Itoa(v.Deposit), 64)
 		if err != nil {
 			return err
 		}
@@ -999,11 +1021,11 @@ func sortPheromoneMatrix(oneRow []float64) []int {
 	return sorted_index
 }
 
-func main() {
+// func main() {
 
-	err := shim.Start(new(SmartContract))
-	if err != nil {
-		fmt.Errorf("Error starting Simple chaincode: %s", err)
-	}
+// 	err := shim.Start(new(SmartContract))
+// 	if err != nil {
+// 		fmt.Errorf("Error starting Simple chaincode: %s", err)
+// 	}
 
-}
+// }
