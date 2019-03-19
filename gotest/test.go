@@ -2,7 +2,11 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
+	"net/http"
+	"net/url"
 	"time"
+
 )
 
 func timeSub(t1, t2 time.Time) int {
@@ -11,16 +15,31 @@ func timeSub(t1, t2 time.Time) int {
 	return int(t1.Sub(t2).Hours() / 24)
 }
 
-func main() {
+func httpPostForm() {
+	resp, err := http.PostForm("http://10.141.221.88:36060/activityMatch",
+		url.Values{})
 
-	a := []int{1,2,3,4,5}
-
-	for k,v := range(a){
-		fmt.Print(k)
-		fmt.Print(" : ")
-		fmt.Println(v)
+	if err != nil {
+		// handle error
 	}
 
-	fmt.Println(len(a))
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		// handle error
+	}
+
+	fmt.Println(string(body))
+
+}
+
+var month2Num = make(map[string]int)
+
+
+func main() {
+	//ad, _ := time.Parse("2006-01-02", time.Now().String())
+	t := time.Now()
+	fmt.Println(time.Now())
+	fmt.Println(t.Format("2006-01-02"))
 
 }
