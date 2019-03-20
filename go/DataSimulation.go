@@ -69,32 +69,32 @@ func initResources() []Resource {
 			"17:00",
 			1,
 		},
-		//Resource{
-		//	"2",
-		//	"Football",
-		//	"Fudan Zhangjiang Campus Football Field",
-		//	"Zhangjiang Town",
-		//	"Pudong District",
-		//	"Shanghai",
-		//	10,
-		//	"tbd",
-		//	"13:00",
-		//	"14:00",
-		//	1,
-		//},
-		//Resource{
-		//	"2",
-		//	"Football",
-		//	"Fudan Zhangjiang Campus Football Field",
-		//	"Zhangjiang Town",
-		//	"Pudong District",
-		//	"Shanghai",
-		//	10,
-		//	"tbd",
-		//	"14:00",
-		//	"15:00",
-		//	1,
-		//},
+		Resource{
+			"2",
+			"Football",
+			"Fudan Zhangjiang Campus Football Field",
+			"Zhangjiang Town",
+			"Pudong District",
+			"Shanghai",
+			10,
+			"tbd",
+			"13:00",
+			"14:00",
+			1,
+		},
+		Resource{
+			"2",
+			"Football",
+			"Fudan Zhangjiang Campus Football Field",
+			"Zhangjiang Town",
+			"Pudong District",
+			"Shanghai",
+			10,
+			"tbd",
+			"14:00",
+			"15:00",
+			1,
+		},
 		//Resource{
 		//	"2",
 		//	"Football",
@@ -338,7 +338,7 @@ func initRequests() []Request {
 	requests := []Request{}
 
 	rand.Seed(time.Now().UnixNano())
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 120; i++ {
 
 		request := Request{}
 		request.ID = strconv.Itoa(i + 1)
@@ -357,7 +357,7 @@ func initRequests() []Request {
 		}
 		request.EndTime = strconv.Itoa(et) + ":00"
 		request.Deposit = rand.Intn(50)
-		request.State = "2"
+		request.State = "0"
 		request.ActivityType = "Football"
 		//request.ResultID = "tbd"
 
@@ -587,6 +587,10 @@ func httpPostForm(resources, requests []byte) ([]byte, error) {
 	fmt.Println(string(body))
 
 	return body, nil
+}
+
+func parseMatchMakingServiceResponse(){
+
 }
 
 func main() {

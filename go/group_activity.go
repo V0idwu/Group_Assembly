@@ -76,7 +76,8 @@ type Request struct {
 	// 0 进入matchgroup数组，还没有进行过第一次撮合
 	// 1 停留在已撮合还未到参加活动时间的matchgroup组内，即撮合成功
 	// 2 未撮合成功
-	// 
+	// 3 活动失败
+	// 4 活动成功
 	State        string
 	ActivityType string
 	Owner        string
