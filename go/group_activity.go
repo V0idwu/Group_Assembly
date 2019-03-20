@@ -64,6 +64,11 @@ var q float64 = 1.6 //蚂蚁每次经过一条路径，信息素增加的比例
 type SmartContract struct {
 }
 
+type User struct {
+	ID    string
+	Money int
+}
+
 type Request struct {
 	ID           string
 	Location     string //位置 zhangjiang Town
@@ -76,8 +81,12 @@ type Request struct {
 	// 0 进入matchgroup数组，还没有进行过第一次撮合
 	// 1 停留在已撮合还未到参加活动时间的matchgroup组内，即撮合成功
 	// 2 未撮合成功
+<<<<<<< HEAD
 	// 3 活动失败
 	// 4 活动成功
+=======
+	//
+>>>>>>> origin/master
 	State        string
 	ActivityType string
 	Owner        string
@@ -99,11 +108,11 @@ type Resource struct {
 }
 
 type MatchGroup struct {
-	ActivityDate      string // 活动日期
-	Area              string // Spot + SpotID + ActivityDate + S
-	StartTime         string
-	EndTime           string
-	Duration          int
+	ActivityDate string // 活动日期
+	Area         string // Spot + SpotID + ActivityDate + S
+	StartTime    string
+	EndTime      string
+	Duration     int
 	// MatchGroup的撮合状态
 	// 1 撮合成功
 	// 2 未撮合成功
@@ -181,6 +190,10 @@ func (s *SmartContract) Invoke(stub shim.ChaincodeStubInterface) sc.Response {
 		return s.showAllRequest(stub)
 	case "getAllLocationsToDapp":
 		return s.getAllLocationsToDapp(stub)
+	case "queryMyRequest":
+		return s.queryMyRequest(stub)
+	case "queryMyMoney":
+		return s.queryMyMoney(stub)
 	case "initLedger":
 		return s.initLedger(stub, args)
 	case "doMatchMaker":
@@ -193,8 +206,8 @@ func (s *SmartContract) Invoke(stub shim.ChaincodeStubInterface) sc.Response {
 
 //接口方法：发布请求
 func (s *SmartContract) createRequest(stub shim.ChaincodeStubInterface, args []string) sc.Response {
-	if len(args) != 4 {
-		return shim.Error("Incorrect number of arguments. Expecting 4")
+	if len(args) != 6 {
+		return shim.Error("Incorrect number of arguments. Expecting 6")
 	}
 	existRequest, _ := stub.GetState(args[0])
 	if existRequest != nil {
@@ -202,11 +215,31 @@ func (s *SmartContract) createRequest(stub shim.ChaincodeStubInterface, args []s
 	}
 
 	var owner, _ = GetCertAttribute2(stub)
-	deposit, err := strconv.Atoi(args[3])
+	var userId = "user" + owner
+	userAsBytes, _ := stub.GetState(userId)
+	if userAsBytes == nil {
+		var user = User{ID: userId, Money: 10000}
+		userAsBytes, _ = json.Marshal(user)
+		stub.PutState(userId, userAsBytes)
+	}
+
+	user := User{}
+	json.Unmarshal(userAsBytes, &user) //unmarshal it aka JSON.parse()
+	money := user.Money
+	deposit, err := strconv.Atoi(args[5])
 	if err != nil {
 		return shim.Error(err.Error())
 	}
-	var request = Request{ID: args[0], Location: args[1], RegisterTime: time.Now().Unix(), StartTime: args[2], Deposit: deposit, State: "0", Owner: owner}
+	if money < deposit {
+		var payload bytes.Buffer
+		payload.WriteString("Not enough money")
+		return shim.Success(payload.Bytes())
+	}
+	user.Money = money - deposit
+	userAsBytes, _ = json.Marshal(user)
+	stub.PutState(userId, userAsBytes)
+
+	var request = Request{ID: args[0], Location: args[1], RegisterTime: time.Now().Unix(), ActivityDate: args[2], StartTime: args[3], EndTime: args[4], Deposit: deposit, State: "0", ActivityType: "Football", Owner: owner}
 	requestAsBytes, _ := json.Marshal(request)
 
 	stub.PutState(args[0], requestAsBytes)
@@ -287,14 +320,24 @@ func (s *SmartContract) cancelRequest(stub shim.ChaincodeStubInterface, args []s
 	}
 	owner := request.Owner
 	//获取该交易用户名
-	var user, _ = GetCertAttribute2(stub)
-	if owner != user {
+	var userName, _ = GetCertAttribute2(stub)
+	if owner != userName {
 		return shim.Error("Error User")
 	}
 	//判断是否已被撮合
 	if request.State != "0" {
 		return shim.Error("Can not Cancel. You has been Arranged into an Activity")
 	}
+
+	var userId = "user" + owner
+	userAsBytes, _ := stub.GetState(userId)
+
+	user := User{}
+	json.Unmarshal(userAsBytes, &user) //unmarshal it aka JSON.parse()
+	money := user.Money
+	user.Money = money + request.Deposit
+	userAsBytes, _ = json.Marshal(user)
+	stub.PutState(userId, userAsBytes)
 
 	stub.DelState(args[0])
 
@@ -333,6 +376,22 @@ func (s *SmartContract) queryMyRequest(stub shim.ChaincodeStubInterface) sc.Resp
 		return shim.Error(err.Error())
 	}
 	return shim.Success(queryResults)
+}
+
+// 查询我的余额
+func (s *SmartContract) queryMyMoney(stub shim.ChaincodeStubInterface) sc.Response {
+
+	var owner, _ = GetCertAttribute2(stub)
+
+	var userId = "user" + owner
+	userAsBytes, _ := stub.GetState(userId)
+	if userAsBytes == nil {
+		var user = User{ID: userId, Money: 10000}
+		userAsBytes, _ = json.Marshal(user)
+		stub.PutState(userId, userAsBytes)
+	}
+
+	return shim.Success(userAsBytes)
 }
 
 // 智能合约：获取所有地址详情
@@ -1022,11 +1081,11 @@ func sortPheromoneMatrix(oneRow []float64) []int {
 	return sorted_index
 }
 
-// func main() {
+func main() {
 
-// 	err := shim.Start(new(SmartContract))
-// 	if err != nil {
-// 		fmt.Errorf("Error starting Simple chaincode: %s", err)
-// 	}
+	err := shim.Start(new(SmartContract))
+	if err != nil {
+		fmt.Errorf("Error starting Simple chaincode: %s", err)
+	}
 
-// }
+}
