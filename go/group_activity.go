@@ -315,14 +315,24 @@ func (s *SmartContract) cancelRequest(stub shim.ChaincodeStubInterface, args []s
 	}
 	owner := request.Owner
 	//获取该交易用户名
-	var user, _ = GetCertAttribute2(stub)
-	if owner != user {
+	var userName, _ = GetCertAttribute2(stub)
+	if owner != userName {
 		return shim.Error("Error User")
 	}
 	//判断是否已被撮合
 	if request.State != "0" {
 		return shim.Error("Can not Cancel. You has been Arranged into an Activity")
 	}
+
+	var userId = "user" + owner
+	userAsBytes, _ := stub.GetState(userId)
+
+	user := User{}
+	json.Unmarshal(userAsBytes, &user) //unmarshal it aka JSON.parse()
+	money := user.Money
+	user.Money = money + request.Deposit
+	userAsBytes, _ = json.Marshal(user)
+	stub.PutState(userId, userAsBytes)
 
 	stub.DelState(args[0])
 
