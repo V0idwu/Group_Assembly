@@ -1,4 +1,4 @@
-package main
+package test
 
 import (
 	"encoding/json"
@@ -14,6 +14,65 @@ import (
 	"strings"
 	"time"
 )
+
+type Request struct {
+	ID           string
+	Location     string //位置 zhangjiang Town
+	RegisterTime int64  //客户端选择某一个上午，计算出那个上午的开始时间，再发给链码，这样方便以后修改时间选择策略
+	ActivityDate string
+	StartTime    string
+	EndTime      string
+	Deposit      int //押金
+	// 报名的撮合状态
+	// 0 进入matchgroup数组，还没有进行过第一次撮合
+	// 1 停留在已撮合还未到参加活动时间的matchgroup组内，即撮合成功
+	// 2 未撮合成功
+	// 3 活动成功
+	// 4 活动失败
+
+	State        string
+	ActivityType string
+	Owner        string
+	//ResultID     string //被撮合到同一组别的用户会被分配一个相同的uid
+}
+
+type Resource struct {
+	SpotID       string // 场地编号
+	ActivityType string
+	Spot         string
+	County       string
+	District     string
+	City         string
+	Capacity     int
+	ActivityDate string // 固有资源，该项默认为"tbd"
+	StartTime    string
+	EndTime      string
+	Duration     int
+}
+
+type MatchGroup struct {
+	ActivityDate string // 活动日期
+	Area         string // Spot + SpotID + ActivityDate + S
+	StartTime    string
+	EndTime      string
+	Duration     int
+	// MatchGroup的撮合状态
+	// 1 撮合成功
+	// 2 未撮合成功
+	State             string
+	Requests          []Request
+	ResourcesInstance Resource // 加入活动日期信息
+}
+
+// 处理接收到的匹配结果
+type MatchMakingResult struct {
+	Area         string
+	ActivityDate string
+	StartTime    string
+	EndTime      string
+	State        string
+	Requests     []int
+}
 
 func initResources() []Resource {
 	resources := []Resource{
@@ -69,32 +128,32 @@ func initResources() []Resource {
 			"17:00",
 			1,
 		},
-		Resource{
-			"2",
-			"Football",
-			"Fudan Zhangjiang Campus Football Field",
-			"Zhangjiang Town",
-			"Pudong District",
-			"Shanghai",
-			10,
-			"tbd",
-			"13:00",
-			"14:00",
-			1,
-		},
-		Resource{
-			"2",
-			"Football",
-			"Fudan Zhangjiang Campus Football Field",
-			"Zhangjiang Town",
-			"Pudong District",
-			"Shanghai",
-			10,
-			"tbd",
-			"14:00",
-			"15:00",
-			1,
-		},
+		//Resource{
+		//	"2",
+		//	"Football",
+		//	"Fudan Zhangjiang Campus Football Field",
+		//	"Zhangjiang Town",
+		//	"Pudong District",
+		//	"Shanghai",
+		//	10,
+		//	"tbd",
+		//	"13:00",
+		//	"14:00",
+		//	1,
+		//},
+		//Resource{
+		//	"2",
+		//	"Football",
+		//	"Fudan Zhangjiang Campus Football Field",
+		//	"Zhangjiang Town",
+		//	"Pudong District",
+		//	"Shanghai",
+		//	10,
+		//	"tbd",
+		//	"14:00",
+		//	"15:00",
+		//	1,
+		//},
 		//Resource{
 		//	"2",
 		//	"Football",
@@ -338,13 +397,13 @@ func initRequests() []Request {
 	requests := []Request{}
 
 	rand.Seed(time.Now().UnixNano())
-	for i := 0; i < 120; i++ {
+	for i := 0; i < 50; i++ {
 
 		request := Request{}
 		request.ID = strconv.Itoa(i + 1)
-		//dateArr := []string{"2019-3-15", "2019-3-16"}
 		request.Location = "Zhangjiang Town"
-			request.RegisterTime = time.Now().Unix()
+		request.RegisterTime = time.Now().Unix()
+		//dateArr := []string{"2019-3-15", "2019-3-16"}
 		//request.ActivityDate = dateArr[rand.Intn(2)]
 		request.ActivityDate = time.Now().Format("2006-01-02")
 		startTimeArr := []int{13, 14, 15, 16}
@@ -370,7 +429,7 @@ func initRequests() []Request {
 
 func makeMatchGroup(resources []Resource, requests []Request, existMatchGroup []MatchGroup) []MatchGroup {
 	newMatchGroups := generateNewMatchGroup(resources, requests)
-	fmt.Println(len(newMatchGroups))
+	//fmt.Println(len(newMatchGroups))
 	//for _, matchGroup := range newMatchGroups {
 	//	//size := unsafe.Sizeof(matchGroup)
 	//	fmt.Println(matchGroup)
@@ -450,7 +509,7 @@ func generateNewMatchGroup(resources []Resource, requests []Request) []MatchGrou
 
 	ActivityDates := make(map[string]int)
 	for _, resource := range requests {
-		ActivityDates[resource.ActivityDate] ++
+		ActivityDates[resource.ActivityDate]++
 	}
 
 	// 按活动日期进行分组
@@ -531,14 +590,14 @@ func prepare4MatchMakerservice(matchGroups []MatchGroup) ([]Request, []Resource)
 		}
 	}
 
-	for _, request4service := range request4services {
-		fmt.Println(request4service)
-	}
-	for _, resource4service := range resource4services {
-		fmt.Println(resource4service)
-	}
-	fmt.Println(len(request4services))
-	fmt.Println(len(resource4services))
+	//for _, request4service := range request4services {
+	//	fmt.Println(request4service)
+	//}
+	//for _, resource4service := range resource4services {
+	//	fmt.Println(resource4service)
+	//}
+	//fmt.Println(len(request4services))
+	//fmt.Println(len(resource4services))
 
 	return request4services, resource4services
 
@@ -584,14 +643,48 @@ func httpPostForm(resources, requests []byte) ([]byte, error) {
 		// handle error
 		return nil, err
 	}
-	fmt.Println(string(body))
+	//fmt.Println(string(body))
 
 	return body, nil
 }
 
-func parseMatchMakingServiceResponse(){
-
-}
+//func parseMatchMakingServiceResponse(matchMakingResults []byte, requests []Request, resoureces []Resource) ([]MatchGroup, error) {
+//	var matchMakingResult []MatchMakingResult
+//
+//	err := json.Unmarshal(matchMakingResults, &matchMakingResult)
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	// fmt.Printf("%T : %v", matchMakingArr,matchMakingArr)
+//	//fmt.Println(matchGroups)
+//	matchGroups := []MatchGroup{}
+//	for _, matchMaking := range matchMakingResult {
+//		matchgroup := MatchGroup{}
+//		spot := strings.Split(matchMaking.Area, "_")[0]
+//		spotID := strings.Split(matchMaking.Area, "_")[1]
+//
+//		matchgroup.ActivityDate = matchMaking.ActivityDate
+//		matchgroup.Area = matchMaking.Area
+//		matchgroup.StartTime = matchMaking.StartTime
+//		matchgroup.EndTime = matchMaking.EndTime
+//		startint, err := strconv.Atoi(matchMaking.StartTime)
+//		endint, err := strconv.Atoi(matchMaking.EndTime)
+//		if err != nil {
+//			return nil, err
+//		}
+//		if err != nil {
+//			return nil, err
+//		}
+//		if endint-startint > 0 {
+//			matchgroup.Duration = endint - startint
+//		}
+//		for _, requestID := range matchMaking.Requests {
+//
+//		}
+//	}
+//	return matchGroups, nil
+//}
 
 func main() {
 	requests := initRequests()
@@ -636,6 +729,12 @@ func main() {
 	}
 	writeJson(data2, "my-fabric\\chaincode\\Group_Assembly\\go\\resources.json")
 
-	httpPostForm(data1, data2)
+	//matchMakingResult, err := httpPostForm(data1, data2)
+	//if err != nil {
+	//	fmt.Println(err.Error())
+	//}
+	//
+	//fmt.Printf("%s",matchMakingResult)
+	//parseMatchMakingServiceResponse(matchMakeingResult, requests, resources)
 
 }

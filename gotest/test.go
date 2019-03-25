@@ -1,45 +1,50 @@
-package main
+package test
 
 import (
-	"fmt"
-	"io/ioutil"
-	"net/http"
-	"net/url"
-	"time"
-
+	"testing"
 )
 
-func timeSub(t1, t2 time.Time) int {
-	t1 = t1.UTC().Truncate(24 * time.Hour)
-	t2 = t2.UTC().Truncate(24 * time.Hour)
-	return int(t1.Sub(t2).Hours() / 24)
+// 第一种
+func BenchmarkMake(t *testing.B) {
+	t.ResetTimer()
+
+	origin := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	for i := 0; i < t.N; i++ {
+		target := make([]int, len(origin))
+		for _, item := range origin {
+			if item != 6 {
+				target = append(target, item)
+			}
+		}
+	}
 }
 
-func httpPostForm() {
-	resp, err := http.PostForm("http://10.141.221.88:36060/activityMatch",
-		url.Values{})
+// 第二种
+func BenchmarkReuse(t *testing.B) {
+	t.ResetTimer()
 
-	if err != nil {
-		// handle error
+	origin := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	for i := 0; i < t.N; i++ {
+		target := origin[:0]
+		for _, item := range origin {
+			if item != 6 {
+				target = append(target, item)
+			}
+		}
 	}
-
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		// handle error
-	}
-
-	fmt.Println(string(body))
-
 }
 
-var month2Num = make(map[string]int)
+// 第三种
+func BenchmarkEditOne(t *testing.B) {
+	t.ResetTimer()
 
-
-func main() {
-	//ad, _ := time.Parse("2006-01-02", time.Now().String())
-	t := time.Now()
-	fmt.Println(time.Now())
-	fmt.Println(t.Format("2006-01-02"))
-
+	origin := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	for i := 0; i < t.N; i++ {
+		for i := 0; i < len(origin); i++ {
+			if origin[i] == 6 {
+				origin = append(origin[:i], origin[i+1:]...)
+				i-- // maintain the correct index
+			}
+		}
+	}
 }

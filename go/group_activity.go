@@ -8,6 +8,11 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io/ioutil"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
 	"strings"
 
 	//"github.com/pkg/errors"
@@ -84,7 +89,6 @@ type Request struct {
 	// 3 活动成功
 	// 4 活动失败
 
-
 	State        string
 	ActivityType string
 	Owner        string
@@ -117,6 +121,16 @@ type MatchGroup struct {
 	State             string
 	Requests          []Request
 	ResourcesInstance Resource // 加入活动日期信息
+}
+
+// 处理接收到的匹配结果
+type MatchMakingResult struct {
+	Area         string
+	ActivityDate string
+	StartTime    string
+	EndTime      string
+	State        string
+	Requests     []int
 }
 
 // 工具方法：类型转换
@@ -158,16 +172,6 @@ func (s *SmartContract) Init(stub shim.ChaincodeStubInterface) sc.Response {
 	return shim.Success(nil)
 }
 
-// 初始化账本方法
-func (s *SmartContract) initLedger(stub shim.ChaincodeStubInterface, args []string) sc.Response {
-	queryString := fmt.Sprintf("{\"selector\":{\"Location\":\"%s\",\"StartTime\":\"%s\"}}", args[0], args[1])
-	requestAsBytes, err := getQueryResultForQueryString(stub, queryString)
-	if err != nil {
-		shim.Error(err.Error())
-	}
-	return shim.Success(requestAsBytes)
-}
-
 //重写shim.ChaincodeStubInterface接口的 Invoke 方法
 func (s *SmartContract) Invoke(stub shim.ChaincodeStubInterface) sc.Response {
 	//获取用户意图与参数
@@ -184,8 +188,8 @@ func (s *SmartContract) Invoke(stub shim.ChaincodeStubInterface) sc.Response {
 		return s.cancelRequest(stub, args)
 	case "confirmRequest":
 		return s.confirmOrder(stub, args)
-	case "showAllRequest":
-		return s.showAllRequest(stub)
+	//case "showAllRequest":
+	//	return s.showAllRequest(stub)
 	case "getAllLocationsToDapp":
 		return s.getAllLocationsToDapp(stub)
 	case "queryMyRequest":
@@ -194,12 +198,149 @@ func (s *SmartContract) Invoke(stub shim.ChaincodeStubInterface) sc.Response {
 		return s.queryMyMoney(stub)
 	case "initLedger":
 		return s.initLedger(stub, args)
-	case "doMatchMaker":
-		return s.doMatchMaker(stub, args)
+	case "doMatchMaking":
+		return s.doMatchMaking(stub, args)
+	case "queryValueByKeyWithRegexSC":
+		return s.queryValueByKeyWithRegexSC(stub, args)
+	case "updateRequestsUponMatchGroups":
+		return s.updateRequestsUponMatchGroups(stub, args)
+	case "test":
+		return s.test(stub, args)
 	default:
 		return shim.Error("no such method")
 	}
 
+}
+
+// 初始化账本方法
+func (s *SmartContract) initLedger(stub shim.ChaincodeStubInterface, args []string) sc.Response {
+	// 初始化资源到stateDB
+	resources := initResources()
+	err := setResources2Ledger(stub, resources)
+	if err != nil {
+		return shim.Error("Method setResources2Ledger " + err.Error())
+	}
+
+	var payload bytes.Buffer
+	payload.WriteString("=== Resource into State DB === ")
+
+	requests := initTestRequests()
+	err = setRequests2Ledger(stub, requests)
+	if err != nil {
+		return shim.Error("Method setRequests2Ledger " + err.Error())
+	}
+	payload.WriteString("Requests into State DB ===")
+	return shim.Success(payload.Bytes())
+
+}
+
+// =========================================================================================
+// 按日期分组，进行撮合
+// =========================================================================================
+func (s *SmartContract) doMatchMaking(stub shim.ChaincodeStubInterface, args []string) sc.Response {
+
+	// request 模拟测试数据
+	requests, err := getAvailableRequestsFromLedger(stub)
+	if err != nil {
+		return shim.Error("Method getAvailableRequestsFromLedger " + err.Error())
+	}
+	// 从State DB 中读取resources
+	resources, err := getResourcesFromLedger(stub)
+	if err != nil {
+		return shim.Error("Method getResourcesFromLedger " + err.Error())
+	}
+
+	var payload bytes.Buffer
+	payload.WriteString(" MatchMakingResult: ")
+
+	// 根据生成新的match group提供resource和request给撮合算法
+	datesMatchGroups := generateNewMatchGroup(resources, requests)
+	// 按日期，分组提交给撮合服务
+	for activityDate, matchGroups := range datesMatchGroups {
+		payload.WriteString(" ActivityDate: { ")
+		payload.WriteString(activityDate)
+
+		// 生成撮合算法的输入 resourceBytes和requestBytes
+		requestArr, resourceArr := prepare4MatchMakerservice(matchGroups)
+		requestBytes, err := json.Marshal(requestArr)
+		if err != nil {
+			return shim.Error("JSON marshaling failed: " + err.Error())
+		}
+
+		resourceBytes, err := json.Marshal(resourceArr)
+		if err != nil {
+			return shim.Error("JSON marshaling failed: " + err.Error())
+		}
+		// 访问撮合api，得到撮合结果
+		matchMakingResultBytes, err := httpPostForm(resourceBytes, requestBytes)
+		if err != nil {
+			return shim.Error("MatchMaking HTTP : " + err.Error())
+		}
+
+		// 将撮合结果整合成matchgroup的样式
+		matchMakingResults, err := parseMatchMakingServiceResponse(stub, matchMakingResultBytes)
+		if err != nil {
+			return shim.Error("Method parseMatchMakingServiceResponse " + err.Error())
+		}
+		for _, matchMakingResult := range matchMakingResults {
+			payload.WriteString("--- Area: ")
+			payload.WriteString(matchMakingResult.Area)
+			payload.WriteString(" --- ")
+			payload.WriteString("Requests: ")
+			for _,req := range matchMakingResult.Requests{
+				payload.WriteString(req.ID)
+				payload.WriteString(",")
+			}
+			payload.WriteString(" --- ")
+		}
+		// 检查是否是已存的matchgroup使用了同一片资源
+		finalMatchMakerResult, err := checkExistMatchGroup(stub, matchMakingResults )
+		if err != nil {
+			return shim.Error("Method checkExistMatchGroup " + err.Error())
+		}
+		// 将matchgroup存入stabe db
+		err = setMatchGroups2Ledger(stub, finalMatchMakerResult)
+		if err != nil {
+			return shim.Error("Method setMatchGroups2Ledger " + err.Error())
+		}
+		payload.WriteString(" } ")
+	}
+
+	return shim.Success(payload.Bytes())
+}
+
+func (s *SmartContract) query(stub shim.ChaincodeStubInterface, args []string) sc.Response {
+	return shim.Success(nil)
+}
+
+func (s *SmartContract) test(stub shim.ChaincodeStubInterface, args []string) sc.Response {
+	//footballResources := []Resource{}
+	var payload bytes.Buffer
+
+	data, err := queryValueByKeyWithRegex(stub, args)
+	if err != nil {
+		shim.Error(err.Error())
+	}
+	payload.WriteString(string(data))
+	//resources, err := queryResourcesByOneKey(stub, []string{args[0],args[1]})
+	//if err != nil {
+	//	shim.Error(err.Error())
+	//}
+	//payload.WriteString("len(resources): ")
+	//payload.WriteString(strconv.Itoa(len(resources)))
+	////for _, resource := range resources {
+	////	var r Resource
+	////	r = resource.(Resource)
+	////	footballResources = append(footballResources, r)
+	////}
+	//
+	//for _,re := range resources{
+	//	payload.WriteString(re.Spot)
+	//	payload.WriteString("_")
+	//	payload.WriteString(re.SpotID)
+	//}
+
+	return shim.Success(payload.Bytes())
 }
 
 //接口方法：发布请求
@@ -347,16 +488,16 @@ func (s *SmartContract) cancelRequest(stub shim.ChaincodeStubInterface, args []s
 	return shim.Success(payload.Bytes())
 }
 
-func (s *SmartContract) showAllRequest(stub shim.ChaincodeStubInterface) sc.Response {
-
-	requestAsBytes, err := queryRequestValueByKeyWithRegex(stub, []string{"StartTime", ""})
-	if err != nil {
-		return shim.Error("Failed to get request:" + err.Error())
-	} else if requestAsBytes == nil {
-		return shim.Error("request does not exist")
-	}
-	return shim.Success(requestAsBytes)
-}
+//func (s *SmartContract) showAllRequest(stub shim.ChaincodeStubInterface) sc.Response {
+//
+//	requestAsBytes, err := queryRequestValueByKeyWithRegex(stub, []string{"StartTime", ""})
+//	if err != nil {
+//		return shim.Error("Failed to get request:" + err.Error())
+//	} else if requestAsBytes == nil {
+//		return shim.Error("request does not exist")
+//	}
+//	return shim.Success(requestAsBytes)
+//}
 
 // 活动结束后用于确认请求
 func (s *SmartContract) confirmOrder(stub shim.ChaincodeStubInterface, args []string) sc.Response {
@@ -536,7 +677,7 @@ func queryRequestValueByKey(stub shim.ChaincodeStubInterface, args []string) ([]
 // =========================================================================================
 //工具方法：查询state db中的key和values，使用正则表达式
 // =========================================================================================
-func queryRequestValueByKeyWithRegex(stub shim.ChaincodeStubInterface, args []string) ([]byte, error) {
+func queryValueByKeyWithRegex(stub shim.ChaincodeStubInterface, args []string) ([]byte, error) {
 	if len(args) != 2 {
 		return nil, errors.New("Incorrect number of arguments. Expecting 2")
 	}
@@ -546,11 +687,52 @@ func queryRequestValueByKeyWithRegex(stub shim.ChaincodeStubInterface, args []st
 	return requestAsBytes, err
 }
 
+func (s *SmartContract) queryValueByKeyWithRegexSC(stub shim.ChaincodeStubInterface, args []string) sc.Response {
+	if len(args) != 2 {
+		return shim.Error("Incorrect number of arguments. Expecting 2")
+	}
+	queryString := fmt.Sprintf("{\"selector\":{\"%s\":{\"$regex\":\"%s\"}}}", args[0], args[1])
+	requestAsBytes, err := getQueryResultForQueryString(stub, queryString)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	return shim.Success(requestAsBytes)
+}
+
+func queryMatchGroupsByOneKey(stub shim.ChaincodeStubInterface, args []string) ([]MatchGroup, error) {
+	if len(args) != 2 {
+		return nil, errors.New("Method queryValueByOneKey() Incorrect number of arguments. Expecting 2")
+	}
+	queryString := fmt.Sprintf("{\"selector\":{\"%s\":{\"$regex\":\"%s\"}}}", args[0], args[1])
+	resultsIterator, err := stub.GetQueryResult(queryString)
+	if err != nil {
+		return nil, err
+	}
+	defer resultsIterator.Close()
+
+	var values []MatchGroup
+	for resultsIterator.HasNext() {
+		queryResponse, err := resultsIterator.Next()
+		if err != nil {
+			return nil, err
+		}
+
+		var value MatchGroup
+		err = json.Unmarshal(queryResponse.Value, &value)
+		if err != nil {
+			return nil, err
+		}
+
+		values = append(values, value)
+	}
+	return values, err
+}
+
 func queryRequestValueByTwoKey(stub shim.ChaincodeStubInterface, args []string) ([]Request, error) {
 	if len(args) != 4 {
 		return nil, errors.New("Incorrect number of arguments. Expecting 4")
 	}
-	queryString := fmt.Sprintf("{\"selector\":{\"%s\":\"%s\",\"%s\":\"%s\"}}", args[0], args[1], args[2], args[3])
+	queryString := fmt.Sprintf("{\"selector\":{\"%s\":\"%s\",\"%s\":{\"$regex\":\"%s\"}}}", args[0], args[1], args[2], args[3])
 	resultsIterator, err := stub.GetQueryResult(queryString)
 	if err != nil {
 		return nil, err
@@ -573,6 +755,64 @@ func queryRequestValueByTwoKey(stub shim.ChaincodeStubInterface, args []string) 
 		requests = append(requests, request)
 	}
 	return requests, err
+}
+
+func queryResourcesByOneKey(stub shim.ChaincodeStubInterface, args []string) ([]Resource, error) {
+	if len(args) != 2 {
+		return nil, errors.New("Method queryValueByOneKey() Incorrect number of arguments. Expecting 2")
+	}
+	queryString := fmt.Sprintf("{\"selector\":{\"%s\":{\"$regex\":\"%s\"}}}", args[0], args[1])
+	resultsIterator, err := stub.GetQueryResult(queryString)
+	if err != nil {
+		return nil, err
+	}
+	defer resultsIterator.Close()
+
+	var values []Resource
+	for resultsIterator.HasNext() {
+		queryResponse, err := resultsIterator.Next()
+		if err != nil {
+			return nil, err
+		}
+
+		var value Resource
+		err = json.Unmarshal(queryResponse.Value, &value)
+		if err != nil {
+			return nil, err
+		}
+
+		values = append(values, value)
+	}
+	return values, err
+}
+
+func queryResourcesValueByTwoKey(stub shim.ChaincodeStubInterface, args []string) ([]Resource, error) {
+	if len(args) != 4 {
+		return nil, errors.New("Incorrect number of arguments. Expecting 4")
+	}
+	queryString := fmt.Sprintf("{\"selector\":{\"%s\":\"%s\",\"%s\":\"%s\"}}", args[0], args[1], args[2], args[3])
+	resultsIterator, err := stub.GetQueryResult(queryString)
+	if err != nil {
+		return nil, err
+	}
+	defer resultsIterator.Close()
+
+	resources := []Resource{}
+	for resultsIterator.HasNext() {
+		queryResponse, err := resultsIterator.Next()
+		if err != nil {
+			return nil, err
+		}
+
+		resource := Resource{}
+		err = json.Unmarshal(queryResponse.Value, &resource)
+		if err != nil {
+			return nil, err
+		}
+
+		resources = append(resources, resource)
+	}
+	return resources, err
 }
 
 // =========================================================================================
@@ -630,97 +870,52 @@ func constructQueryResponseFromIterator(resultsIterator shim.StateQueryIteratorI
 }
 
 // =========================================================================================
-//根据时间、空间等约束，将满足条件的报名者筛选出来（应是按时间、地点划分成的多组，先只考虑一组报名者）
-// =========================================================================================
-func (s *SmartContract) doMatchMaker(stub shim.ChaincodeStubInterface, args []string) sc.Response {
-	var satisMaxArr []float64
-	var satisPathArr [][][]int
-	err := filter(stub, &satisMaxArr, &satisPathArr)
-	if err != nil {
-		shim.Error("doMatchMaker Error : " + err.Error())
-	}
-
-	var payload bytes.Buffer
-	for i := 0; i < len(satisMaxArr); i++ {
-		payload.WriteString(strconv.Itoa(i + 1))
-		payload.WriteString(" satisMax = ")
-		payload.WriteString(strconv.FormatFloat(satisMaxArr[i], 'f', -1, 64))
-		payload.WriteString("; ")
-	}
-
-	//payload.WriteString("diffTime: ")
-	//payload.WriteString(diffTime)
-
-	//for k, v := range StartTime {
-	//	payload.WriteString("StartTime: ")
-	//	payload.WriteString(k)
-	//	payload.WriteString(", Num: ")
-	//	payload.WriteString(strconv.Itoa(v))
-	//	payload.WriteString(" ; ")
-	//}
-
-	return shim.Success(payload.Bytes())
-}
-
-func test() {
-	//模拟初始数据
-	deposit = append(deposit, 10, 12, 3, 4, 8, 16, 7, 5, 9, 10, 11, 15, 13, 14, 15, 13, 15, 16, 16, 18)
-	timeValue = append(timeValue, 1, 2, 3, 3, 3, 2, 0, 1, 2, 2, 0, 3, 1, 1, 2, 4, 1, 0, 2, 3)
-	applicantNum = len(deposit)
-	for i := 0; i < applicantNum; i++ {
-		depositAndTime = append(depositAndTime, deposit[i]*0.5+timeValue[i]*0.5)
-	}
-
-	fmt.Println(depositAndTime)
-}
-
-// =========================================================================================
 // 对当前state db中的报名信息进行整理，
 // =========================================================================================
-func filter(stub shim.ChaincodeStubInterface, satisMaxArr *[]float64, satisMaxPath *[][][]int) error {
-	locationNumMap, err := getAllRequestValueNum(stub, "Location")
-	if err != nil {
-		return err
-	}
-	activityTimeNumMap, err := getAllRequestValueNum(stub, "ActivityTime")
+// func filter(stub shim.ChaincodeStubInterface, satisMaxArr *[]float64, satisMaxPath *[][][]int) error {
+// 	locationNumMap, err := getAllRequestValueNum(stub, "Location")
+// 	if err != nil {
+// 		return err
+// 	}
+// 	activityTimeNumMap, err := getAllRequestValueNum(stub, "ActivityTime")
 
-	//requests := []Request{}
-	for keyLoc, _ := range locationNumMap {
-		for keyTime, _ := range activityTimeNumMap {
-			curTime := time.Now()
-			times := strings.Split(keyTime, "/")
-			formatTimeStr := strings.Join(times[:3], "-0") + " 00:00:00"
-			standardActivityTime, err := time.Parse("2006-01-02 15:04:05", formatTimeStr)
-			if err != nil {
-				return err
-			}
-			diff := timeSub(standardActivityTime, curTime)
+// 	//requests := []Request{}
+// 	for keyLoc, _ := range locationNumMap {
+// 		for keyTime, _ := range activityTimeNumMap {
+// 			curTime := time.Now()
+// 			times := strings.Split(keyTime, "/")
+// 			formatTimeStr := strings.Join(times[:3], "-0") + " 00:00:00"
+// 			standardActivityTime, err := time.Parse("2006-01-02 15:04:05", formatTimeStr)
+// 			if err != nil {
+// 				return err
+// 			}
+// 			diff := timeSub(standardActivityTime, curTime)
 
-			if diff >= 3 {
-				values := []string{"Location", keyLoc, "ActivityTime", keyTime}
-				requests, err := queryRequestValueByTwoKey(stub, values)
-				if err != nil {
-					return err
-				}
-				//requests = append(requests, request)
-				err1 := initUserRegisterInfo(requests)
-				if err1 != nil {
-					return err1
-				}
-				////satisMax, satisPath, err2 := aca()
-				//if err2 != nil {
-				//	return err2
-				//}
-				//*satisMaxArr = append(*satisMaxArr, satisMax)
-				//*satisMaxPath = append(*satisMaxPath, satisPath)
-			}
+// 			if diff >= 3 {
+// 				values := []string{"Location", keyLoc, "ActivityTime", keyTime}
+// 				requests, err := queryRequestValueByTwoKey(stub, values)
+// 				if err != nil {
+// 					return err
+// 				}
+// 				//requests = append(requests, request)
+// 				err1 := initUserRegisterInfo(requests)
+// 				if err1 != nil {
+// 					return err1
+// 				}
+// 				////satisMax, satisPath, err2 := aca()
+// 				//if err2 != nil {
+// 				//	return err2
+// 				//}
+// 				//*satisMaxArr = append(*satisMaxArr, satisMax)
+// 				//*satisMaxPath = append(*satisMaxPath, satisPath)
+// 			}
 
-		}
+// 		}
 
-	}
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 // 计算时间差的天数
 func timeSub(t1, t2 time.Time) int {
@@ -729,355 +924,749 @@ func timeSub(t1, t2 time.Time) int {
 	return int(t1.Sub(t2).Hours() / 24)
 }
 
-// 根据活动时间对报名用户进行分类
-//func getAllLocationAndActivityTime(stub shim.ChaincodeStubInterface) ([]Request, error) {
-//
-//}
+func initResources() []Resource {
+	resources := []Resource{
+		Resource{
+			"1",
+			"Football",
+			"Fudan Zhangjiang Campus Football Field",
+			"Zhangjiang Town",
+			"Pudong District",
+			"Shanghai",
+			10,
+			"tbd",
+			"13:00",
+			"14:00",
+			1,
+		},
+		Resource{
+			"1",
+			"Football",
+			"Fudan Zhangjiang Campus Football Field",
+			"Zhangjiang Town",
+			"Pudong District",
+			"Shanghai",
+			10,
+			"tbd",
+			"14:00",
+			"15:00",
+			1,
+		},
+		Resource{
+			"1",
+			"Football",
+			"Fudan Zhangjiang Campus Football Field",
+			"Zhangjiang Town",
+			"Pudong District",
+			"Shanghai",
+			10,
+			"tbd",
+			"15:00",
+			"16:00",
+			1,
+		},
+		Resource{
+			"1",
+			"Football",
+			"Fudan Zhangjiang Campus Football Field",
+			"Zhangjiang Town",
+			"Pudong District",
+			"Shanghai",
+			10,
+			"tbd",
+			"16:00",
+			"17:00",
+			1,
+		},
+		Resource{
+			"2",
+			"Football",
+			"Fudan Zhangjiang Campus Football Field",
+			"Zhangjiang Town",
+			"Pudong District",
+			"Shanghai",
+			10,
+			"tbd",
+			"13:00",
+			"14:00",
+			1,
+		},
+		Resource{
+			"2",
+			"Football",
+			"Fudan Zhangjiang Campus Football Field",
+			"Zhangjiang Town",
+			"Pudong District",
+			"Shanghai",
+			10,
+			"tbd",
+			"14:00",
+			"15:00",
+			1,
+		},
+		Resource{
+			"2",
+			"Football",
+			"Fudan Zhangjiang Campus Football Field",
+			"Zhangjiang Town",
+			"Pudong District",
+			"Shanghai",
+			10,
+			"tbd",
+			"15:00",
+			"16:00",
+			1,
+		},
+		Resource{
+			"2",
+			"Football",
+			"Fudan Zhangjiang Campus Football Field",
+			"Zhangjiang Town",
+			"Pudong District",
+			"Shanghai",
+			10,
+			"tbd",
+			"16:00",
+			"17:00",
+			1,
+		},
+		//Resource{
+		//	"1",
+		//	"Football",
+		//	"Shanghai University of Traditional Chinese Medicine Football Field",
+		//	"Zhangjiang Town",
+		//	"Pudong District",
+		//	"Shanghai",
+		//	20,
+		//	"tbd",
+		//	"13:00",
+		//	"15:00",
+		//	2,
+		//},
+		//Resource{
+		//	"1",
+		//	"Football",
+		//	"Shanghai University of Traditional Chinese Medicine Football Field",
+		//	"Zhangjiang Town",
+		//	"Pudong District",
+		//	"Shanghai",
+		//	20,
+		//	"tbd",
+		//	"15:00",
+		//	"17:00",
+		//	2,
+		//},
+		//Resource{
+		//	"1",
+		//	"Football",
+		//	"Shanghai University of Science and Technology Football Field",
+		//	"Zhangjiang Town",
+		//	"Pudong District",
+		//	"Shanghai",
+		//	10,
+		//	"tbd",
+		//	"13:00",
+		//	"15:00",
+		//	2,
+		//},
+		//Resource{
+		//	"1",
+		//	"Football",
+		//	"Shanghai University of Science and Technology Football Field",
+		//	"Zhangjiang Town",
+		//	"Pudong District",
+		//	"Shanghai",
+		//	10,
+		//	"tbd",
+		//	"15:00",
+		//	"17:00",
+		//	2,
+		//},
+		//Resource{
+		//	"2",
+		//	"Football",
+		//	"Shanghai University of Science and Technology Football Field",
+		//	"Zhangjiang Town",
+		//	"Pudong District",
+		//	"Shanghai",
+		//	10,
+		//	"tbd",
+		//	"13:00",
+		//	"15:00",
+		//	2,
+		//},
+		//Resource{
+		//	"2",
+		//	"Football",
+		//	"Shanghai University of Science and Technology Football Field",
+		//	"Zhangjiang Town",
+		//	"Pudong District",
+		//	"Shanghai",
+		//	10,
+		//	"tbd",
+		//	"15:00",
+		//	"17:00",
+		//	2,
+		//},
+		//Resource{
+		//	"1",
+		//	"Football",
+		//	"Zhangjiang Sports Center Football Field",
+		//	"Zhangjiang Town",
+		//	"Pudong District",
+		//	"Shanghai",
+		//	20,
+		//	"tbd",
+		//	"13:00",
+		//	"15:00",
+		//	2,
+		//},
+		//Resource{
+		//	"1",
+		//	"Football",
+		//	"Zhangjiang Sports Center Football Field",
+		//	"Zhangjiang Town",
+		//	"Pudong District",
+		//	"Shanghai",
+		//	20,
+		//	"tbd",
+		//	"15:00",
+		//	"17:00",
+		//	2,
+		//},
+		//Resource{
+		//	"2",
+		//	"Football",
+		//	"Zhangjiang Sports Center Football Field",
+		//	"Zhangjiang Town",
+		//	"Pudong District",
+		//	"Shanghai",
+		//	10,
+		//	"tbd",
+		//	"13:00",
+		//	"14:00",
+		//	1,
+		//},
+		//Resource{
+		//	"2",
+		//	"Football",
+		//	"Zhangjiang Sports Center Football Field",
+		//	"Zhangjiang Town",
+		//	"Pudong District",
+		//	"Shanghai",
+		//	10,
+		//	"tbd",
+		//	"14:00",
+		//	"15:00",
+		//	1,
+		//},
+		//Resource{
+		//	"2",
+		//	"Football",
+		//	"Zhangjiang Sports Center Football Field",
+		//	"Zhangjiang Town",
+		//	"Pudong District",
+		//	"Shanghai",
+		//	10,
+		//	"tbd",
+		//	"15:00",
+		//	"16:00",
+		//	1,
+		//},
+		//Resource{
+		//	"2",
+		//	"Football",
+		//	"Zhangjiang Sports Center Football Field",
+		//	"Zhangjiang Town",
+		//	"Pudong District",
+		//	"Shanghai",
+		//	10,
+		//	"tbd",
+		//	"16:00",
+		//	"17:00",
+		//	1,
+		//},
+		//Resource{
+		//	"3",
+		//	"Football",
+		//	"Zhangjiang Sports Center Football Field",
+		//	"Zhangjiang Town",
+		//	"Pudong District",
+		//	"Shanghai",
+		//	10,
+		//	"tbd",
+		//	"13:00",
+		//	"14:00",
+		//	1,
+		//},
+		//Resource{
+		//	"3",
+		//	"Football",
+		//	"Zhangjiang Sports Center Football Field",
+		//	"Zhangjiang Town",
+		//	"Pudong District",
+		//	"Shanghai",
+		//	10,
+		//	"tbd",
+		//	"14:00",
+		//	"15:00",
+		//	1,
+		//},
+		//Resource{
+		//	"3",
+		//	"Football",
+		//	"Zhangjiang Sports Center Football Field",
+		//	"Zhangjiang Town",
+		//	"Pudong District",
+		//	"Shanghai",
+		//	10,
+		//	"tbd",
+		//	"15:00",
+		//	"16:00",
+		//	1,
+		//},
+		//Resource{
+		//	"3",
+		//	"Football",
+		//	"Zhangjiang Sports Center Football Field",
+		//	"Zhangjiang Town",
+		//	"Pudong District",
+		//	"Shanghai",
+		//	10,
+		//	"tbd",
+		//	"16:00",
+		//	"17:00",
+		//	1,
+		//},
+	}
 
-// 进行一次撮合，初始化撮合需要使用的参数
-func initUserRegisterInfo(requests []Request) error {
-	serialNum := 0 // 本次撮合的序号标记
-	for _, v := range requests {
-		idToSequenceNumber[serialNum] = v.ID
-		serialNum++
-		//
-		strDeposit, err := strconv.ParseFloat(strconv.Itoa(v.Deposit), 64)
+	return resources
+}
+
+func initTestRequests() []Request {
+	requests := []Request{}
+
+	rand.Seed(time.Now().UnixNano())
+	for i := 0; i < 100; i++ {
+
+		request := Request{}
+		request.ID = strconv.Itoa(i + 1)
+
+		request.Location = "Zhangjiang Town"
+		request.RegisterTime = time.Now().Unix()
+		dateArr := []string{"2019-3-15", "2019-3-16"}
+		request.ActivityDate = dateArr[rand.Intn(2)]
+		//request.ActivityDate = time.Now().Format("2006-01-02")
+		startTimeArr := []int{13, 14, 15, 16}
+		endTimeArr := []int{14, 15, 16, 17}
+		st := startTimeArr[rand.Intn(4)]
+		et := endTimeArr[rand.Intn(4)]
+		request.StartTime = strconv.Itoa(st) + ":00"
+		for st >= et {
+			et = endTimeArr[rand.Intn(4)]
+		}
+		request.EndTime = strconv.Itoa(et) + ":00"
+		request.Deposit = rand.Intn(50)
+		request.State = "0"
+		request.ActivityType = "Football"
+		//request.ResultID = "tbd"
+
+		requests = append(requests, request)
+	}
+	//26,5,36,39,35,23,50,25,13,27
+	//"StartTime":"14:00","Requests":[4,24,34,6,18,8,49,45,20,44]},
+	return requests
+}
+
+func getMatchGroupsFromLedger(stub shim.ChaincodeStubInterface) ([]MatchGroup, error) {
+	matchGroups, err := queryMatchGroupsByOneKey(stub, []string{"Area", ""})
+	if err != nil {
+		return nil, err
+	}
+	return matchGroups, nil
+}
+
+func setResources2Ledger(stub shim.ChaincodeStubInterface, resources []Resource) error {
+
+	for _, resource := range resources {
+		key, err := stub.CreateCompositeKey("Resource", []string{resource.Spot, resource.SpotID, resource.StartTime, resource.EndTime})
 		if err != nil {
 			return err
 		}
-		// 保证金
-		deposit = append(deposit, strDeposit)
-
-		// 时间价值
-		tV := time.Now().Unix() - v.RegisterTime
-		timeValue = append(timeValue, float64(tV)/1000000.0)
+		value, err := json.Marshal(resource)
+		if err != nil {
+			return err
+		}
+		err = stub.PutState(key, value)
+		if err != nil {
+			return err
+		}
 	}
-
-	for i := 0; i < len(deposit); i++ {
-		depositAndTime = append(depositAndTime, deposit[i]*(1+timeValue[i]))
-	}
-
 	return nil
 }
 
-//蚁群算法
-func aca() (float64, [][]int, error) {
-	if deposit == nil {
-		return 0, nil, errors.New("No Enough participants")
+// get request
+func getResourcesFromLedger(stub shim.ChaincodeStubInterface) ([]Resource, error) {
+	//footballResources := []Resource{}
+	resources, err := queryResourcesByOneKey(stub, []string{"ActivityType", "Football"})
+	if err != nil {
+		return nil, err
 	}
-
-	// 迭代搜索
-	var result_bestSatis float64
-	var result_bestPath [][]int
-	result_bestSatis, result_bestPath = acaSearch()
-	fmt.Println("最大满意度为：", result_bestSatis)
-	fmt.Println("对应的最佳分配结果为：", result_bestPath)
-
-	//stub.PutState("max satisfaction", Float64ToByte(result_bestSatis))
 	//
-	//payload.WriteString("max satisfaction:")
-	//payload.WriteString(strconv.FormatFloat(result_bestSatis, 'f', -1, 64))
-
-	return result_bestSatis, result_bestPath, nil
+	//for _, resource := range resources {
+	//	var r Resource
+	//	r = resource.(Resource)
+	//	footballResources = append(footballResources, r)
+	//}
+	return resources, nil
 }
 
-func initPheromoneMatrix() {
-	for i := 0; i < applicantNum; i++ {
-		temp := make([]float64, 0, applicantNum)
-		for j := 0; j < applicantNum; j++ {
-			temp = append(temp, 1)
+func setRequests2Ledger(stub shim.ChaincodeStubInterface, requests []Request) error {
+	for _, request := range requests {
+		requestData, err := json.Marshal(request)
+		if err != nil {
+			return err
 		}
-		pheromoneMatrix = append(pheromoneMatrix, temp)
+		err = stub.PutState(request.ID, requestData)
+		if err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
-func initMatrix(m, n, value int) [][]int {
-	var result [][]int
-	for i := 0; i < m; i++ {
-		temp := make([]int, 0, n)
-		for j := 0; j < n; j++ {
-			temp = append(temp, value)
-		}
-		result = append(result, temp)
+func getAvailableRequestsFromLedger(stub shim.ChaincodeStubInterface) ([]Request, error) {
+	requestsNotMatch, err := queryRequestValueByTwoKey(stub, []string{"State", "0", "Owner", ""})
+	if err != nil {
+		return nil, err
 	}
-	return result
+	requestsFailMatch, err := queryRequestValueByTwoKey(stub, []string{"State", "2", "Owner", ""})
+	if err != nil {
+		return nil, err
+	}
+	for _, request := range requestsFailMatch {
+		requestsNotMatch = append(requestsNotMatch, request)
+	}
+	return requestsNotMatch, err
 }
 
-func acaSearch() (float64, [][]int) {
+func setMatchGroups2Ledger(stub shim.ChaincodeStubInterface, matchGroups []MatchGroup) error {
 
-	var m, i int
+	for _, matchgroup := range matchGroups {
 
-	//记录每个m对应的最佳路径和最大满意度
-	var resultPath [][][]int
-	var resultSatis []float64
-
-	//增加一重循环，确定活动参与人数m的取值
-	for m = M_LOW; m <= applicantNum && m <= M_HIGH; m++ {
-
-		fmt.Println("m=", m)
-
-		// 初始化信息素矩阵，设初始元素值全为1
-		initPheromoneMatrix()
-
-		//初始化criticalPointMatrix
-		for i = 0; i < applicantNum; i++ {
-			criticalPointMatrix = append(criticalPointMatrix, -1)
+		value, err := json.Marshal(matchgroup)
+		if err != nil {
+			return err
 		}
+		err = stub.PutState(matchgroup.Area, value)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-		// 初始化sortedPheromoneMatrix矩阵
-		for i := 0; i < applicantNum; i++ {
-			var temp []int
-			for j := 0; j < applicantNum; j++ {
-				temp = append(temp, j)
+// 根据matchgroup的情况，更新requests
+func (s *SmartContract) updateRequestsUponMatchGroups(stub shim.ChaincodeStubInterface, args []string) sc.Response {
+	matchGroups ,err := getMatchGroupsFromLedger(stub)
+	if err != nil{
+		return shim.Error("updateRequestsUponMatchGroups " + err.Error())
+	}
+
+	for _,matchGroup := range matchGroups{
+		for _,request := range matchGroup.Requests{
+			var req Request
+			data,err := stub.GetState(request.ID)
+			if err !=nil{
+				return shim.Error("updateRequestsUponMatchGroups " + err.Error())
 			}
-			sortedPheromoneMatrix = append(sortedPheromoneMatrix, temp)
+			err = json.Unmarshal(data, &req)
+			if err !=nil{
+				return shim.Error("updateRequestsUponMatchGroups " + err.Error())
+			}
+			req.State = "1"
+			data,err = json.Marshal(req)
+			if err !=nil{
+				return shim.Error("updateRequestsUponMatchGroups " + err.Error())
+			}
+			err = stub.PutState(req.ID, data)
+			if err !=nil{
+				return shim.Error("updateRequestsUponMatchGroups " + err.Error())
+			}
 		}
 
-		//记录当前m值下的最佳分配路径和最大满意度
-		var bestPath [][]int = initMatrix(applicantNum, applicantNum, 0)
-		var bestSatis float64 = MIN_VALUE
+	}
+	var payload bytes.Buffer
+	payload.WriteString("updateRequestsUponMatchGroups ")
+	return shim.Success(payload.Bytes())
+}
 
-		var nodes []int
-		//根据m的具体取值，初始化nodes数组
-		for i = 0; i < m; i++ {
-			nodes = append(nodes, 1)
+//查看资源是否已经存在占用情况
+func checkExistMatchGroup(stub shim.ChaincodeStubInterface, newMatchGroups []MatchGroup) ([]MatchGroup, error) {
+	var matchGroups []MatchGroup
+	for _, newMatchGroup := range newMatchGroups {
+		existMatchGroup, err := stub.GetState(newMatchGroup.Area)
+		if existMatchGroup != nil{
+			continue
 		}
-		for i = m; i < applicantNum; i++ {
-			nodes = append(nodes, 0)
+		if existMatchGroup == nil {
+			matchGroups = append(matchGroups, newMatchGroup)
+		} else if err != nil {
+			return nil, err
 		}
 
-		// 当前m下所有迭代中每个蚂蚁分配结果的满意度
-		var resultData [][]float64
+	}
+	return matchGroups, nil
+}
 
-		for itCount := 0; itCount < iteratorNum; itCount++ {
+// xx:00 string --> xx int
+func turnHourTime2Int(time string) (int, error) {
+	t := strings.Split(time, ":")[0]
+	tint, err := strconv.Atoi(t)
+	if err != nil {
+		return -1, err
+	}
+	return tint, nil
 
-			// 本次迭代中，所有蚂蚁的路径
-			var pathMatrix_allAnt [][][]int
+}
 
-			for antCount := 0; antCount < antNum; antCount++ {
-				// 第antCount只蚂蚁的分配策略(pathMatrix[i][j]表示第antCount只蚂蚁将节点i分配给报名者j)
-				var pathMatrix_oneAnt [][]int = initMatrix(applicantNum, applicantNum, 0) //初始化数组元素全为0
-				var assignedApplicant []int
-				for nodeCount := 0; nodeCount < applicantNum; nodeCount++ {
-					// 将第nodeCount个节点分配给第applicantCount个报名者
-					applicantCount := assignOneNode(assignedApplicant, antCount, nodeCount)
-					pathMatrix_oneAnt[nodeCount][applicantCount] = 1
-					assignedApplicant = append(assignedApplicant, applicantCount)
+func generateNewMatchGroup(resources []Resource, requests []Request) map[string][]MatchGroup {
+	ActivityDates := make(map[string]int)
+	for _, resource := range requests {
+		ActivityDates[resource.ActivityDate]++
+	}
+
+	matchGroups := map[string][]MatchGroup{}
+	// 按活动日期进行分组
+	for activityDate := range ActivityDates {
+		matchGroup := []MatchGroup{}
+		for _, resource := range resources {
+			singleMatch := MatchGroup{}
+			for index, request := range requests {
+				// 通过地点匹配
+				if request.Location == resource.County {
+					// 日期相同的报名
+					if request.ActivityDate == activityDate {
+						// 用户报名的开始结束时间要能包含资源可以提供的时间段
+						qs, err := turnHourTime2Int(request.StartTime)
+						ss, err := turnHourTime2Int(resource.StartTime)
+						qe, err := turnHourTime2Int(request.EndTime)
+						se, err := turnHourTime2Int(resource.EndTime)
+						if err != nil {
+							fmt.Println(err.Error())
+						}
+						if qs <= ss && qe >= se {
+							request.State = "0"
+							singleMatch.Requests = append(singleMatch.Requests, request)
+						}
+
+					}
 				}
-				// 将当前蚂蚁的路径加入pathMatrix_allAnt
-				pathMatrix_allAnt = append(pathMatrix_allAnt, pathMatrix_oneAnt)
-			}
 
-			// 计算 本次迭代中 所有蚂蚁 的任务分配的整体满意度
-			var satisArray_oneIt []float64 = calSatis_oneIt(pathMatrix_allAnt, nodes)
-			// 将本地迭代中 所有蚂蚁的 节点分配满意度加入总结果集
-			resultData = append(resultData, satisArray_oneIt)
+				if index == len(requests)-1 && len(singleMatch.Requests) != 0 {
+					//fmt.Println(activityDate)
+					singleMatch.ResourcesInstance = resource
+					singleMatch.ResourcesInstance.ActivityDate = activityDate
+					singleMatch.ActivityDate = activityDate
+					singleMatch.State = "2"
+					singleMatch.StartTime = resource.StartTime
+					singleMatch.EndTime = resource.EndTime
+					singleMatch.Duration = resource.Duration
 
-			// 更新信息素
-			bestAntIndex := updatePheromoneMatrix(pathMatrix_allAnt, satisArray_oneIt)
-
-			fmt.Println(satisArray_oneIt[bestAntIndex])
-
-			// 更新当前m下的最大满意度和最佳路径
-			if satisArray_oneIt[bestAntIndex] > bestSatis {
-				bestSatis = satisArray_oneIt[bestAntIndex]
-				bestPath = pathMatrix_allAnt[bestAntIndex]
-			}
-
-		}
-		resultSatis = append(resultSatis, bestSatis)
-		resultPath = append(resultPath, bestPath)
-	}
-
-	// 通过计算满意度选择最佳的分配方案
-	var result_bestSatis float64 = resultSatis[0]
-	var result_bestIndex int = 0
-	for i = 1; i < len(resultSatis); i++ {
-		if resultSatis[i] > result_bestSatis {
-			result_bestSatis = resultSatis[i]
-			result_bestIndex = i
-		}
-	}
-	var result_bestPath [][]int = resultPath[result_bestIndex]
-
-	return result_bestSatis, result_bestPath
-}
-
-func assignOneNode(assignedApplicant []int, antCount int, nodeCount int) int {
-
-	// 去除已分配的报名者下标
-	//fmt.Println(sortedPheromoneMatrix[nodeCount])
-	var sorted_index []int = make([]int, applicantNum)
-	//sorted_index = sortedPheromoneMatrix[nodeCount]
-	copy(sorted_index, sortedPheromoneMatrix[nodeCount])
-	for i := 0; i < len(assignedApplicant); i++ {
-		for j := 0; j < len(sorted_index); j++ {
-			if sorted_index[j] == assignedApplicant[i] {
-				// 去掉 sorted_index[j]
-				sorted_index = append(sorted_index[:j], sorted_index[j+1:]...)
-				break
-			}
-		}
-	}
-
-	// 若当前蚂蚁编号在临界点之前，则采用最大信息素的分配方式 （且此时该下标对应的报名者未分配）
-	if antCount <= criticalPointMatrix[nodeCount] {
-		//
-		var sameFirst int = 0
-		for i := 0; i < len(sorted_index)-1; i++ {
-			if pheromoneMatrix[nodeCount][sorted_index[i]] != pheromoneMatrix[nodeCount][sorted_index[i+1]] {
-				sameFirst = i
-				break
-			}
-		}
-		if sameFirst == 0 {
-			return sorted_index[0]
-		}
-		time.Sleep(3 * time.Millisecond)
-		rand.Seed(time.Now().UnixNano())
-		result := rand.Intn(sameFirst)
-		return sorted_index[result]
-		//return maxPheromoneMatrix[nodeCount]
-	}
-
-	// 若当前蚂蚁编号在临界点之后，则采用随机分配方式
-	// 设置随机数种子
-	time.Sleep(3 * time.Millisecond)
-	rand.Seed(time.Now().UnixNano())
-	index := rand.Intn(len(sorted_index))
-	return sorted_index[index]
-}
-
-func calSatis_oneIt(pathMatrix_allAnt [][][]int, nodes []int) []float64 {
-	var satisArray_oneIt []float64
-	// 计算每个蚂蚁分配结果的满意度--方差倒数
-	var data []float64
-	var sum float64 = 0
-	for i := 0; i < antNum; i++ {
-		for nodeIndex := 0; nodeIndex < applicantNum; nodeIndex++ {
-			for applicantIndex := 0; applicantIndex < applicantNum; applicantIndex++ {
-				if pathMatrix_allAnt[i][nodeIndex][applicantIndex] == 1 && nodes[nodeIndex] == 1 {
-					data = append(data, depositAndTime[applicantIndex])
-					sum += depositAndTime[applicantIndex]
 				}
 			}
+			//size := unsafe.Sizeof(singleMatch.ResourcesInstance.Spot)
+			//fmt.Println(size)
+			if singleMatch.ResourcesInstance.Spot != "" {
+				matchGroup = append(matchGroup, singleMatch)
+			}
 		}
-		// 计算方差
-		var ave float64 = sum / float64(len(data))
-		sum = 0
-		for i := 0; i < len(data); i++ {
-			sum += (data[i] - ave) * (data[i] - ave)
-		}
-		sum = 1.0 / (sum / float64(len(data)))
-		//sum = -1.0 * (sum / float64(len(data)))
-		satisArray_oneIt = append(satisArray_oneIt, sum)
-		data = nil
-		sum = 0
+		matchGroups[activityDate] = matchGroup
+
 	}
-	return satisArray_oneIt
+
+	// matchGroups去空
+
+	return matchGroups
 }
 
-func updatePheromoneMatrix(pathMatrix_allAnt [][][]int, satisArray_oneIt []float64) int {
+func prepare4MatchMakerservice(matchGroups []MatchGroup) ([]Request, []Resource) {
+	resource4services := []Resource{}
+	request4servicesDep := []Request{}
 
-	var bestAntIndex int
-
-	// 所有信息素均衰减p%
-	for i := 0; i < applicantNum; i++ {
-		for j := 0; j < applicantNum; j++ {
-			pheromoneMatrix[i][j] *= p
+	for _, matchGroup := range matchGroups {
+		resource4services = append(resource4services, matchGroup.ResourcesInstance)
+		for _, request := range matchGroup.Requests {
+			request4servicesDep = append(request4servicesDep, request)
 		}
 	}
 
-	// 找出满意度最大的蚂蚁编号
-	var maxSatis = MIN_VALUE
-	var maxIndex = -1
-	for antIndex := 0; antIndex < antNum; antIndex++ {
-		if satisArray_oneIt[antIndex] > maxSatis {
-			maxSatis = satisArray_oneIt[antIndex]
-			maxIndex = antIndex
-		}
-	}
-	bestAntIndex = maxIndex
-
-	// 将本次迭代中最优路径的信息素增加q%
-	for nodeIndex := 0; nodeIndex < applicantNum; nodeIndex++ {
-		for applicantIndex := 0; applicantIndex < applicantNum; applicantIndex++ {
-			if pathMatrix_allAnt[maxIndex][nodeIndex][applicantIndex] == 1 {
-				pheromoneMatrix[nodeIndex][applicantIndex] *= q
-				break
+	//fmt.Println(request4servicesDep)
+	// 去重
+	request4services := []Request{}
+	for _, requestdep := range request4servicesDep {
+		flag := true
+		for _, request := range request4services {
+			if reflect.DeepEqual(requestdep, request) {
+				flag = false
 			}
 		}
+		if flag {
+			request4services = append(request4services, requestdep)
+		}
 	}
 
-	//清空
-	maxPheromoneMatrix = nil
-	criticalPointMatrix = nil
-	sortedPheromoneMatrix = nil
-	for nodeIndex := 0; nodeIndex < applicantNum; nodeIndex++ {
-		var maxPheromone float64 = pheromoneMatrix[nodeIndex][0]
-		var maxIndex = 0
-		var sumPheromone float64 = pheromoneMatrix[nodeIndex][0]
-		var isAllSame = true
+	return request4services, resource4services
 
-		for applicantIndex := 1; applicantIndex < applicantNum; applicantIndex++ {
-			if pheromoneMatrix[nodeIndex][applicantIndex] > maxPheromone {
-				maxPheromone = pheromoneMatrix[nodeIndex][applicantIndex]
-				maxIndex = nodeIndex
-			}
-
-			if pheromoneMatrix[nodeIndex][applicantIndex] != pheromoneMatrix[nodeIndex][applicantIndex-1] {
-				isAllSame = false
-			}
-
-			sumPheromone += pheromoneMatrix[nodeIndex][applicantIndex]
-		}
-
-		// 若本行信息素全都相等，则随机选择一个作为最大信息素
-		if isAllSame == true {
-			//设置随机数种子
-			time.Sleep(3 * time.Millisecond)
-			rand.Seed(time.Now().UnixNano())
-			maxIndex = rand.Intn(applicantNum)
-			maxPheromone = pheromoneMatrix[nodeIndex][maxIndex]
-		}
-
-		// 将本行最大信息素的下标加入maxPheromoneMatrix
-		maxPheromoneMatrix = append(maxPheromoneMatrix, maxIndex)
-
-		// 记录本行信息素由大到小排序的下标
-		var oneRow []float64 = make([]float64, applicantNum)
-		copy(oneRow, pheromoneMatrix[nodeIndex])
-		sortedPheromoneMatrix_one := sortPheromoneMatrix(oneRow)
-		sortedPheromoneMatrix = append(sortedPheromoneMatrix, sortedPheromoneMatrix_one)
-
-		// 将本次迭代的蚂蚁临界编号加入criticalPointMatrix(该临界点之前的蚂蚁的任务分配根据最大信息素原则，而该临界点之后的蚂蚁采用随机分配策略)
-		criticalPointMatrix = append(criticalPointMatrix, int(math.Floor(float64(antNum)*(maxPheromone/sumPheromone)+0.5)))
-	}
-	fmt.Println(criticalPointMatrix)
-	return bestAntIndex
 }
 
-func sortPheromoneMatrix(oneRow []float64) []int {
-	var sorted_index []int
-	for k := 0; k < applicantNum; k++ {
-		sorted_index = append(sorted_index, k)
+func writeJson(data []byte, filename string) {
+	fp, err := os.OpenFile(filename, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0755)
+	if err != nil {
+		log.Fatal(err)
 	}
-	for i := 0; i < len(oneRow)-1; i++ {
-		for j := 0; j < len(oneRow)-1-i; j++ {
-			if oneRow[j] <= oneRow[j+1] {
-				var temp float64 = oneRow[j]
-				oneRow[j] = oneRow[j+1]
-				oneRow[j+1] = temp
-
-				var index int = sorted_index[j]
-				sorted_index[j] = sorted_index[j+1]
-				sorted_index[j+1] = index
-			}
-		}
+	//fp.Truncate(0)
+	defer fp.Close()
+	_, err = fp.Write(data)
+	if err != nil {
+		log.Fatal(err)
 	}
-
-	return sorted_index
 }
+
+//func printBytes2JsonFile(bytes []byte, filename string){
+//	data, err := json.Marshal(bytes)
+//	if err != nil {
+//		log.Fatalf("JSON marshaling failed: %s", err)
+//	}
+//	writeJson(data, filename)
+//	//err = ioutil.WriteFile("./test.json", data, os.ModeAppend)
+//	if err != nil {
+//		return
+//	}
+//}
+
+func httpPostForm(resources, requests []byte) ([]byte, error) {
+	resp, err := http.PostForm("http://10.141.221.88:36060/activityMatch",
+		url.Values{"resources": {string(resources)}, "requests": {string(requests)}})
+
+	if err != nil {
+		// handle error
+		return nil, err
+	}
+
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		// handle error
+		return nil, err
+	}
+	//fmt.Println(string(body))
+
+	return body, nil
+}
+
+// 将从撮合服务得到的结果转换成[]MatchGroup
+func parseMatchMakingServiceResponse(stub shim.ChaincodeStubInterface, matchMakingResults []byte) ([]MatchGroup, error) {
+	var matchMakingResult []MatchMakingResult
+
+	err := json.Unmarshal(matchMakingResults, &matchMakingResult)
+	if err != nil {
+		return nil, err
+	}
+
+	// fmt.Printf("%T : %v", matchMakingArr,matchMakingArr)
+	//fmt.Println(matchGroups)
+	matchGroups := []MatchGroup{}
+	for _, matchMaking := range matchMakingResult {
+		matchGroup := MatchGroup{}
+		spot := strings.Split(matchMaking.Area, "_")[0]
+		spotID := strings.Split(matchMaking.Area, "_")[1]
+		matchGroup.ActivityDate = matchMaking.ActivityDate
+		matchGroup.Area = matchMaking.Area
+		matchGroup.StartTime = matchMaking.StartTime
+		matchGroup.EndTime = matchMaking.EndTime
+		matchGroup.State = matchMaking.State
+		startint, err := strconv.Atoi(strings.Split(matchMaking.StartTime, ":")[0])
+		if err != nil {
+			return nil, err
+		}
+		endint, err := strconv.Atoi(strings.Split(matchMaking.EndTime, ":")[0])
+		if err != nil {
+			return nil, err
+		}
+		if endint-startint > 0 {
+			matchGroup.Duration = endint - startint
+		}
+		for _, requestID := range matchMaking.Requests {
+			request := Request{}
+			data, err := stub.GetState(strconv.Itoa(requestID))
+			if err != nil {
+				return nil, err
+			}
+			err = json.Unmarshal(data, &request)
+			if err != nil {
+				return nil, err
+			}
+			// 在此处将用户报名的State置为"1"
+			request.State = "1"
+			matchGroup.Requests = append(matchGroup.Requests, request)
+		}
+
+		resourceKey, err := stub.CreateCompositeKey("Resource", []string{spot, spotID, matchGroup.StartTime, matchGroup.EndTime})
+		if err != nil {
+			return nil, err
+		}
+		resource := Resource{}
+		data, err := stub.GetState(resourceKey)
+		if err != nil {
+			return nil, err
+		}
+		err = json.Unmarshal(data, &resource)
+		if err != nil {
+			return nil, err
+		}
+		matchGroup.ResourcesInstance = resource
+
+		matchGroups = append(matchGroups, matchGroup)
+
+	}
+	return matchGroups, nil
+}
+
+//func testMatchMaker() {
+//	requests := initTestRequests()
+//	resources := initResources()
+//
+//	matchGroups := generateNewMatchGroup(resources, requests)
+//	//fmt.Println("\n")
+//	//fmt.Println("========================================================")
+//	//fmt.Println("Result:")
+//	//fmt.Println("========================================================")
+//	//fmt.Println()
+//
+//	// get resources and requests from state db
+//
+//	requestArr, resourceArr := prepare4MatchMakerservice(matchGroups)
+//
+//	data1, err := json.Marshal(requestArr)
+//	if err != nil {
+//		log.Fatalf("JSON marshaling failed: %s", err)
+//	}
+//	writeJson(data1, "my-fabric\\chaincode\\Group_Assembly\\go\\requests.json")
+//	data2, err := json.Marshal(resourceArr)
+//	if err != nil {
+//		log.Fatalf("JSON marshaling failed: %s", err)
+//	}
+//	writeJson(data2, "my-fabric\\chaincode\\Group_Assembly\\go\\resources.json")
+//
+//	matchMakeingResult, err := httpPostForm(data1, data2)
+//	if err != nil {
+//		fmt.Println(err.Error())
+//	}
+//
+//	parseMatchMakingServiceResponse(stub, matchMakeingResult)
+//
+//}
 
 func main() {
 

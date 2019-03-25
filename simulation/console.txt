@@ -68,6 +68,9 @@ Result:
 {1 Football Fudan Zhangjiang Campus Football Field Zhangjiang Town Pudong District Shanghai 10 2019-03-18 16:00 17:00 1}
 50
 4
-[{"Area":"Fudan Zhangjiang Campus Football Field_1_2019-03-18_13","ActivityDate":"2019-03-18","EndTime":"14:00","State":"1","StartTime":"13:00","Requests":[26,5,36,39,35,23,50,25,13,27]},{"Area":"Fudan Zhangjiang Campus Football Field_1_2019-03-18_15","ActivityDate":"2019-03-18","EndTime":"16:00","State":"1","StartTime":"15:00","Requests":[48,29,38,32,37,30,41,47,12,14]},{"Area":"Fudan Zhangjiang Campus Football Field_1_2019-03-18_14","ActivityDate":"2019-03-18","EndTime":"15:00","State":"1","StartTime":"14:00","Requests":[4,24,34,6,18,8,49,45,20,44]},{"Area":"Fudan Zhangjiang Campus Football Field_1_2019-03-18_16","ActivityDate":"2019-03-18","EndTime":"17:00","State":"1","StartTime":"16:00","Requests":[11,9,3,21,46,28,19,33,16,40]}]
+[{"Area":"Fudan Zhangjiang Campus Football Field_1_2019-03-18_13","ActivityDate":"2019-03-18","EndTime":"14:00","State":"1","StartTime":"13:00","Requests":[26,5,36,39,35,23,50,25,13,27]},
+{"Area":"Fudan Zhangjiang Campus Football Field_1_2019-03-18_15","ActivityDate":"2019-03-18","EndTime":"16:00","State":"1","StartTime":"15:00","Requests":[48,29,38,32,37,30,41,47,12,14]},
+{"Area":"Fudan Zhangjiang Campus Football Field_1_2019-03-18_14","ActivityDate":"2019-03-18","EndTime":"15:00","State":"1","StartTime":"14:00","Requests":[4,24,34,6,18,8,49,45,20,44]},
+{"Area":"Fudan Zhangjiang Campus Football Field_1_2019-03-18_16","ActivityDate":"2019-03-18","EndTime":"17:00","State":"1","StartTime":"16:00","Requests":[11,9,3,21,46,28,19,33,16,40]}]
 
 Debugger finished with exit code 0
