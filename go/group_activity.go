@@ -74,6 +74,8 @@ type User struct {
 	Money int
 }
 
+type MatchGroupsByActivityDate map[string][]MatchGroup
+
 type Request struct {
 	ID           string
 	Location     string //位置 zhangjiang Town
@@ -118,6 +120,8 @@ type MatchGroup struct {
 	// MatchGroup的撮合状态
 	// 1 撮合成功
 	// 2 未撮合成功
+	// 3 活动成功
+	// 4 活动失败
 	State             string
 	Requests          []Request
 	ResourcesInstance Resource // 加入活动日期信息
@@ -239,7 +243,7 @@ func (s *SmartContract) initLedger(stub shim.ChaincodeStubInterface, args []stri
 // =========================================================================================
 func (s *SmartContract) doMatchMaking(stub shim.ChaincodeStubInterface, args []string) sc.Response {
 
-	// request 模拟测试数据
+	// 从State DB 中读取requests
 	requests, err := getAvailableRequestsFromLedger(stub)
 	if err != nil {
 		return shim.Error("Method getAvailableRequestsFromLedger " + err.Error())
@@ -254,56 +258,62 @@ func (s *SmartContract) doMatchMaking(stub shim.ChaincodeStubInterface, args []s
 	payload.WriteString(" MatchMakingResult: ")
 
 	// 根据生成新的match group提供resource和request给撮合算法
-	datesMatchGroups := generateNewMatchGroup(resources, requests)
+	matchGroupsByDateType := generateNewMatchGroup(resources, requests)
+
 	// 按日期，分组提交给撮合服务
-	for activityDate, matchGroups := range datesMatchGroups {
-		payload.WriteString(" ActivityDate: { ")
-		payload.WriteString(activityDate)
+	for activityType, matchGroupsByDate := range matchGroupsByDateType {
+		payload.WriteString(" ActivityType: [ ")
+		payload.WriteString(activityType)
+		for activityDate, matchGroups := range matchGroupsByDate{
+			payload.WriteString(" ActivityDate: { ")
+			payload.WriteString(activityDate)
 
-		// 生成撮合算法的输入 resourceBytes和requestBytes
-		requestArr, resourceArr := prepare4MatchMakerservice(matchGroups)
-		requestBytes, err := json.Marshal(requestArr)
-		if err != nil {
-			return shim.Error("JSON marshaling failed: " + err.Error())
-		}
-
-		resourceBytes, err := json.Marshal(resourceArr)
-		if err != nil {
-			return shim.Error("JSON marshaling failed: " + err.Error())
-		}
-		// 访问撮合api，得到撮合结果
-		matchMakingResultBytes, err := httpPostForm(resourceBytes, requestBytes)
-		if err != nil {
-			return shim.Error("MatchMaking HTTP : " + err.Error())
-		}
-
-		// 将撮合结果整合成matchgroup的样式
-		matchMakingResults, err := parseMatchMakingServiceResponse(stub, matchMakingResultBytes)
-		if err != nil {
-			return shim.Error("Method parseMatchMakingServiceResponse " + err.Error())
-		}
-		for _, matchMakingResult := range matchMakingResults {
-			payload.WriteString("--- Area: ")
-			payload.WriteString(matchMakingResult.Area)
-			payload.WriteString(" --- ")
-			payload.WriteString("Requests: ")
-			for _,req := range matchMakingResult.Requests{
-				payload.WriteString(req.ID)
-				payload.WriteString(",")
+			// 生成撮合算法的输入 resourceBytes和requestBytes
+			requestArr, resourceArr := prepare4MatchMakerservice(matchGroups)
+			requestBytes, err := json.Marshal(requestArr)
+			if err != nil {
+				return shim.Error("JSON marshaling failed: " + err.Error())
 			}
-			payload.WriteString(" --- ")
+
+			resourceBytes, err := json.Marshal(resourceArr)
+			if err != nil {
+				return shim.Error("JSON marshaling failed: " + err.Error())
+			}
+			// 访问撮合api，得到撮合结果
+			matchMakingResultBytes, err := httpPostForm(resourceBytes, requestBytes)
+			if err != nil {
+				return shim.Error("MatchMaking HTTP : " + err.Error())
+			}
+
+			// 将撮合结果整合成matchgroup的样式
+			matchMakingResults, err := parseMatchMakingServiceResponse(stub, matchMakingResultBytes)
+			if err != nil {
+				return shim.Error("Method parseMatchMakingServiceResponse " + err.Error())
+			}
+			for _, matchMakingResult := range matchMakingResults {
+				payload.WriteString("--- Area: ")
+				payload.WriteString(matchMakingResult.Area)
+				payload.WriteString(" --- ")
+				payload.WriteString("Requests: ")
+				for _, req := range matchMakingResult.Requests {
+					payload.WriteString(req.ID)
+					payload.WriteString(",")
+				}
+				payload.WriteString(" --- ")
+			}
+			// 检查是否是已存的matchgroup使用了同一片资源
+			finalMatchMakerResult, err := checkExistMatchGroup(stub, matchMakingResults)
+			if err != nil {
+				return shim.Error("Method checkExistMatchGroup " + err.Error())
+			}
+			// 将matchgroup存入stabe db
+			err = setMatchGroups2Ledger(stub, finalMatchMakerResult)
+			if err != nil {
+				return shim.Error("Method setMatchGroups2Ledger " + err.Error())
+			}
+			payload.WriteString(" } ]")
 		}
-		// 检查是否是已存的matchgroup使用了同一片资源
-		finalMatchMakerResult, err := checkExistMatchGroup(stub, matchMakingResults )
-		if err != nil {
-			return shim.Error("Method checkExistMatchGroup " + err.Error())
-		}
-		// 将matchgroup存入stabe db
-		err = setMatchGroups2Ledger(stub, finalMatchMakerResult)
-		if err != nil {
-			return shim.Error("Method setMatchGroups2Ledger " + err.Error())
-		}
-		payload.WriteString(" } ")
+
 	}
 
 	return shim.Success(payload.Bytes())
@@ -869,54 +879,6 @@ func constructQueryResponseFromIterator(resultsIterator shim.StateQueryIteratorI
 	return &buffer, nil
 }
 
-// =========================================================================================
-// 对当前state db中的报名信息进行整理，
-// =========================================================================================
-// func filter(stub shim.ChaincodeStubInterface, satisMaxArr *[]float64, satisMaxPath *[][][]int) error {
-// 	locationNumMap, err := getAllRequestValueNum(stub, "Location")
-// 	if err != nil {
-// 		return err
-// 	}
-// 	activityTimeNumMap, err := getAllRequestValueNum(stub, "ActivityTime")
-
-// 	//requests := []Request{}
-// 	for keyLoc, _ := range locationNumMap {
-// 		for keyTime, _ := range activityTimeNumMap {
-// 			curTime := time.Now()
-// 			times := strings.Split(keyTime, "/")
-// 			formatTimeStr := strings.Join(times[:3], "-0") + " 00:00:00"
-// 			standardActivityTime, err := time.Parse("2006-01-02 15:04:05", formatTimeStr)
-// 			if err != nil {
-// 				return err
-// 			}
-// 			diff := timeSub(standardActivityTime, curTime)
-
-// 			if diff >= 3 {
-// 				values := []string{"Location", keyLoc, "ActivityTime", keyTime}
-// 				requests, err := queryRequestValueByTwoKey(stub, values)
-// 				if err != nil {
-// 					return err
-// 				}
-// 				//requests = append(requests, request)
-// 				err1 := initUserRegisterInfo(requests)
-// 				if err1 != nil {
-// 					return err1
-// 				}
-// 				////satisMax, satisPath, err2 := aca()
-// 				//if err2 != nil {
-// 				//	return err2
-// 				//}
-// 				//*satisMaxArr = append(*satisMaxArr, satisMax)
-// 				//*satisMaxPath = append(*satisMaxPath, satisPath)
-// 			}
-
-// 		}
-
-// 	}
-
-// 	return nil
-// }
-
 // 计算时间差的天数
 func timeSub(t1, t2 time.Time) int {
 	t1 = t1.UTC().Truncate(24 * time.Hour)
@@ -1368,29 +1330,29 @@ func setMatchGroups2Ledger(stub shim.ChaincodeStubInterface, matchGroups []Match
 
 // 根据matchgroup的情况，更新requests
 func (s *SmartContract) updateRequestsUponMatchGroups(stub shim.ChaincodeStubInterface, args []string) sc.Response {
-	matchGroups ,err := getMatchGroupsFromLedger(stub)
-	if err != nil{
+	matchGroups, err := getMatchGroupsFromLedger(stub)
+	if err != nil {
 		return shim.Error("updateRequestsUponMatchGroups " + err.Error())
 	}
 
-	for _,matchGroup := range matchGroups{
-		for _,request := range matchGroup.Requests{
+	for _, matchGroup := range matchGroups {
+		for _, request := range matchGroup.Requests {
 			var req Request
-			data,err := stub.GetState(request.ID)
-			if err !=nil{
+			data, err := stub.GetState(request.ID)
+			if err != nil {
 				return shim.Error("updateRequestsUponMatchGroups " + err.Error())
 			}
 			err = json.Unmarshal(data, &req)
-			if err !=nil{
+			if err != nil {
 				return shim.Error("updateRequestsUponMatchGroups " + err.Error())
 			}
 			req.State = "1"
-			data,err = json.Marshal(req)
-			if err !=nil{
+			data, err = json.Marshal(req)
+			if err != nil {
 				return shim.Error("updateRequestsUponMatchGroups " + err.Error())
 			}
 			err = stub.PutState(req.ID, data)
-			if err !=nil{
+			if err != nil {
 				return shim.Error("updateRequestsUponMatchGroups " + err.Error())
 			}
 		}
@@ -1406,7 +1368,7 @@ func checkExistMatchGroup(stub shim.ChaincodeStubInterface, newMatchGroups []Mat
 	var matchGroups []MatchGroup
 	for _, newMatchGroup := range newMatchGroups {
 		existMatchGroup, err := stub.GetState(newMatchGroup.Area)
-		if existMatchGroup != nil{
+		if existMatchGroup != nil {
 			continue
 		}
 		if existMatchGroup == nil {
@@ -1430,64 +1392,75 @@ func turnHourTime2Int(time string) (int, error) {
 
 }
 
-func generateNewMatchGroup(resources []Resource, requests []Request) map[string][]MatchGroup {
-	ActivityDates := make(map[string]int)
-	for _, resource := range requests {
-		ActivityDates[resource.ActivityDate]++
+
+func generateNewMatchGroup(resources []Resource, requests []Request) map[string]MatchGroupsByActivityDate {
+	activityDates := make(map[string]int)
+	for _, request := range requests {
+		activityDates[request.ActivityDate]++
 	}
 
-	matchGroups := map[string][]MatchGroup{}
+	activityTypes := make(map[string]int)
+	for _, request := range requests {
+		activityDates[request.ActivityType]++
+	}
+
+	matchGroupsByActivityDateType := map[string]MatchGroupsByActivityDate{}
 	// 按活动日期进行分组
-	for activityDate := range ActivityDates {
-		matchGroup := []MatchGroup{}
-		for _, resource := range resources {
-			singleMatch := MatchGroup{}
-			for index, request := range requests {
-				// 通过地点匹配
-				if request.Location == resource.County {
-					// 日期相同的报名
-					if request.ActivityDate == activityDate {
-						// 用户报名的开始结束时间要能包含资源可以提供的时间段
-						qs, err := turnHourTime2Int(request.StartTime)
-						ss, err := turnHourTime2Int(resource.StartTime)
-						qe, err := turnHourTime2Int(request.EndTime)
-						se, err := turnHourTime2Int(resource.EndTime)
-						if err != nil {
-							fmt.Println(err.Error())
+	for activityType := range activityTypes {
+		matchGroupsByDate := map[string][]MatchGroup{}
+		for activityDate := range activityDates {
+			matchGroup := []MatchGroup{}
+			for _, resource := range resources {
+				singleMatch := MatchGroup{}
+				for index, request := range requests {
+					// 通过地点匹配
+					if request.Location == resource.County {
+						// 日期相同的报名
+						if request.ActivityDate == activityDate {
+							if request.ActivityType == activityType && resource.ActivityType == activityType{
+								// 用户报名的开始结束时间要能包含资源可以提供的时间段
+								qs, err := turnHourTime2Int(request.StartTime)
+								ss, err := turnHourTime2Int(resource.StartTime)
+								qe, err := turnHourTime2Int(request.EndTime)
+								se, err := turnHourTime2Int(resource.EndTime)
+								if err != nil {
+									fmt.Println(err.Error())
+								}
+								if qs <= ss && qe >= se {
+									request.State = "0"
+									singleMatch.Requests = append(singleMatch.Requests, request)
+								}
+							}
+
+
 						}
-						if qs <= ss && qe >= se {
-							request.State = "0"
-							singleMatch.Requests = append(singleMatch.Requests, request)
-						}
+					}
+
+					if index == len(requests)-1 && len(singleMatch.Requests) != 0 {
+						//fmt.Println(activityDate)
+						singleMatch.ResourcesInstance = resource
+						singleMatch.ResourcesInstance.ActivityDate = activityDate
+						singleMatch.ActivityDate = activityDate
+						singleMatch.State = "2"
+						singleMatch.StartTime = resource.StartTime
+						singleMatch.EndTime = resource.EndTime
+						singleMatch.Duration = resource.Duration
 
 					}
 				}
-
-				if index == len(requests)-1 && len(singleMatch.Requests) != 0 {
-					//fmt.Println(activityDate)
-					singleMatch.ResourcesInstance = resource
-					singleMatch.ResourcesInstance.ActivityDate = activityDate
-					singleMatch.ActivityDate = activityDate
-					singleMatch.State = "2"
-					singleMatch.StartTime = resource.StartTime
-					singleMatch.EndTime = resource.EndTime
-					singleMatch.Duration = resource.Duration
-
+				//size := unsafe.Sizeof(singleMatch.ResourcesInstance.Spot)
+				//fmt.Println(size)
+				if singleMatch.ResourcesInstance.Spot != "" {
+					matchGroup = append(matchGroup, singleMatch)
 				}
 			}
-			//size := unsafe.Sizeof(singleMatch.ResourcesInstance.Spot)
-			//fmt.Println(size)
-			if singleMatch.ResourcesInstance.Spot != "" {
-				matchGroup = append(matchGroup, singleMatch)
-			}
+			matchGroupsByDate[activityDate] = matchGroup
 		}
-		matchGroups[activityDate] = matchGroup
-
+		matchGroupsByActivityDateType[activityType] = matchGroupsByDate
 	}
-
 	// matchGroups去空
 
-	return matchGroups
+	return matchGroupsByActivityDateType
 }
 
 func prepare4MatchMakerservice(matchGroups []MatchGroup) ([]Request, []Resource) {
