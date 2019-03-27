@@ -442,8 +442,8 @@ func (s *SmartContract) updateRequest(stub shim.ChaincodeStubInterface, args []s
 
 //接口方法：取消请求
 func (s *SmartContract) cancelRequest(stub shim.ChaincodeStubInterface, args []string) sc.Response {
-	if len(args) != 4 {
-		return shim.Error("Incorrect number of arguments. Expecting 4")
+	if len(args) != 1 {
+		return shim.Error("Incorrect number of arguments. Expecting 1")
 	}
 	//判断该请求是否是该用户所有
 	//获取该请求真实所有者
@@ -503,7 +503,60 @@ func (s *SmartContract) cancelRequest(stub shim.ChaincodeStubInterface, args []s
 
 // 活动结束后用于确认请求
 func (s *SmartContract) confirmOrder(stub shim.ChaincodeStubInterface, args []string) sc.Response {
-	return shim.Success(nil)
+	if len(args) != 2 {
+		return shim.Error("Incorrect number of arguments. Expecting 2")
+	}
+	//判断该请求是否是该用户所有
+	//获取该请求真实所有者
+	requestID := args[0]
+	requestAsBytes, err := stub.GetState(requestID)
+	if err != nil {
+		return shim.Error("Failed to get request:" + err.Error())
+	} else if requestAsBytes == nil {
+		return shim.Error("request does not exist")
+	}
+	request := Request{}
+	err = json.Unmarshal(requestAsBytes, &request) //unmarshal it aka JSON.parse()
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	owner := request.Owner
+	//获取该交易用户名
+	var userName, _ = GetCertAttribute2(stub)
+	if owner != userName {
+		return shim.Error("Error User")
+	}
+	//判断是否已被撮合
+	if request.State != "1" {
+		return shim.Error("Can not update. ")
+	}
+
+	if args[1] == "3" {
+		//如果去，就把1改成3，并还钱
+		request.State = "3"
+		user := User{}
+
+		var userId = "user" + owner
+		userAsBytes, _ := stub.GetState(userId)
+		json.Unmarshal(userAsBytes, &user) //unmarshal it aka JSON.parse()
+		money := user.Money
+		user.Money = money + request.Deposit
+		userAsBytes, _ = json.Marshal(user)
+		stub.PutState(userId, userAsBytes)
+	} else if args[1] == "4" {
+		//如果是不去，就把1改为4
+		request.State = "4"
+	}
+
+	requestAsBytes, _ = json.Marshal(request)
+	stub.PutState(args[0], requestAsBytes)
+
+	var payload bytes.Buffer
+	payload.WriteString("ID:")
+	payload.WriteString(args[0])
+	payload.WriteString("Updating Success")
+
+	return shim.Success(payload.Bytes())
 }
 
 // 查询我的所有请求
