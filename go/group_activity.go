@@ -266,6 +266,7 @@ func (s *SmartContract) doMatchMaking(stub shim.ChaincodeStubInterface, args []s
 	var payload bytes.Buffer
 	payload.WriteString(" MatchMakingResult: ")
 
+	var finalMatchResults []MatchGroup
 	// 根据生成新的match group提供resource和request给撮合算法
 	matchGroupsByDateType := generateNewMatchGroup(resources, requests)
 	// 按日期，分组提交给撮合服务
@@ -305,7 +306,7 @@ func (s *SmartContract) doMatchMaking(stub shim.ChaincodeStubInterface, args []s
 			if err != nil {
 				return shim.Error("MatchMaking HTTP : " + err.Error())
 			}
-			payload.WriteString(string(matchMakingResultBytes))
+			//payload.WriteString(string(matchMakingResultBytes))
 			// 将撮合结果整合成matchgroup的样式
 			matchMakingResults, err := parseMatchMakingServiceResponse(stub, matchMakingResultBytes, activityType)
 			if err != nil {
@@ -327,15 +328,19 @@ func (s *SmartContract) doMatchMaking(stub shim.ChaincodeStubInterface, args []s
 			if err != nil {
 				return shim.Error("Method checkExistMatchGroup " + err.Error())
 			}
-			// 将matchgroup存入stabe db
-			err = setMatchGroups2Ledger(stub, finalMatchMakerResult)
-			if err != nil {
-				return shim.Error("Method setMatchGroups2Ledger " + err.Error())
+			for _,finalMatchMakerR := range finalMatchMakerResult{
+				finalMatchResults = append(finalMatchResults, finalMatchMakerR)
 			}
 			payload.WriteString(" } ")
 		}
 		payload.WriteString(" } ")
 	}
+	// 将最终结果matchgroup存入stabe db
+	err = setMatchGroups2Ledger(stub, finalMatchResults)
+	if err != nil {
+		return shim.Error("Method setMatchGroups2Ledger " + err.Error())
+	}
+	payload.WriteString(" Save MatchMaking Result into StateDB ")
 	return shim.Success(payload.Bytes())
 }
 
