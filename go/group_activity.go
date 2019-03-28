@@ -89,11 +89,11 @@ type Request struct {
 	// 3 活动成功
 	// 4 活动失败
 
-	State        string
-	ActivityType string
-	Owner        string
+	State          string
+	ActivityType   string
+	Owner          string
 	ReqMatchResult string // Spot + SpotID + ActivityDate + StartTime + EndTime+ ActivityType
-						// Fudan Zhangjiang Campus Football Field_1_2019-03-28_13:00_14:00_1
+	// Fudan Zhangjiang Campus Football Field_1_2019-03-28_13:00_14:00_1
 	//ResultID     string //被撮合到同一组别的用户会被分配一个相同的uid
 }
 
@@ -212,6 +212,10 @@ func (s *SmartContract) Invoke(stub shim.ChaincodeStubInterface) sc.Response {
 		return s.updateRequestsUponMatchGroups(stub, args)
 	case "test":
 		return s.test(stub, args)
+	case "createResource":
+		return s.createResource(stub, args)
+	case "deleteResource":
+		return s.deleteResource(stub, args)
 	default:
 		return shim.Error("no such method")
 	}
@@ -289,7 +293,6 @@ func (s *SmartContract) doMatchMaking(stub shim.ChaincodeStubInterface, args []s
 				//payload.WriteString("in loop ")
 				continue
 			}
-
 
 			//访问撮合api，得到撮合结果
 
@@ -627,22 +630,29 @@ func (s *SmartContract) createResource(stub shim.ChaincodeStubInterface, args []
 		return shim.Error("Incorrect number of arguments. Expecting 10")
 	}
 
-	resources := []Resource{}
 	capacity, err := strconv.Atoi(args[6])
 	if err != nil {
-		return shim.Error(" createResource " +err.Error())
+		return shim.Error(" createResource " + err.Error())
 	}
-	duration, err := strconv.Atoi(args[10])
+	duration, err := strconv.Atoi(args[9])
 	if err != nil {
-		return shim.Error(" createResource " +err.Error())
+		return shim.Error(" createResource " + err.Error())
 	}
 	resource := Resource{args[0], args[1], args[2], args[3], args[4], args[5], capacity, "tbd", args[7], args[8], duration}
 
-	resources = append(resources,resource)
-	err = setResources2Ledger(stub, resources)
+	key, err := stub.CreateCompositeKey("Resource", []string{resource.Spot, resource.SpotID, resource.ActivityType, resource.StartTime, resource.EndTime})
 	if err != nil {
-		return shim.Error(" createResource " +err.Error())
+		return shim.Error(" createResource " + err.Error())
 	}
+	value, err := json.Marshal(resource)
+	if err != nil {
+		return shim.Error(" createResource " + err.Error())
+	}
+	err = stub.PutState(key, value)
+	if err != nil {
+		return shim.Error(" createResource " + err.Error())
+	}
+
 	var payload bytes.Buffer
 	payload.WriteString(" Resource Create Successfully ")
 	return shim.Success(payload.Bytes())
@@ -656,23 +666,24 @@ func (s *SmartContract) deleteResource(stub shim.ChaincodeStubInterface, args []
 	// resource.Spot, resource.SpotID, resource.ActivityType, resource.StartTime, resource.EndTime
 	key, err := stub.CreateCompositeKey("Resource", []string{args[1], args[0], args[2], args[3], args[4]})
 	if err != nil {
-		return shim.Error(" deleteResource " +err.Error())
+		return shim.Error(" deleteResource " + err.Error())
 	}
 	data, err := stub.GetState(key)
 	if err != nil {
-		return shim.Error(" deleteResource " +err.Error())
+		return shim.Error(" deleteResource " + err.Error())
 	}
 	if len(string(data)) == 0 {
 		return shim.Error(" Resource doesn't Exist")
 	}
 	err = stub.DelState(key)
 	if err != nil {
-		return shim.Error(" deleteResource " +err.Error())
+		return shim.Error(" deleteResource " + err.Error())
 	}
 	var payload bytes.Buffer
 	payload.WriteString(" Resource Delete Successfully ")
 	return shim.Success(payload.Bytes())
 }
+
 // 查询相同请求人数
 //func (s *SmartContract) querySameRequestPeopleNumber(stub shim.ChaincodeStubInterface, args []string) sc.Response {
 //
@@ -811,7 +822,7 @@ func (s *SmartContract) queryValueByKeyWithRegexSC(stub shim.ChaincodeStubInterf
 	if len(args) != 3 {
 		return shim.Error("Incorrect number of arguments. Expecting 3")
 	}
-	queryString := fmt.Sprintf("{\"selector\":{\"%s\":{\"%s\":\"%s\"}}", args[0], args[1],args[2])
+	queryString := fmt.Sprintf("{\"selector\":{\"%s\":{\"%s\":\"%s\"}}", args[0], args[1], args[2])
 	requestAsBytes, err := getQueryResultForQueryString(stub, queryString)
 	if err != nil {
 		return shim.Error(err.Error())
