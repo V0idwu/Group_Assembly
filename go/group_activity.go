@@ -363,8 +363,8 @@ func (s *SmartContract) test(stub shim.ChaincodeStubInterface, args []string) sc
 
 //接口方法：发布请求
 func (s *SmartContract) createRequest(stub shim.ChaincodeStubInterface, args []string) sc.Response {
-	if len(args) != 6 {
-		return shim.Error("Incorrect number of arguments. Expecting 6")
+	if len(args) != 7 {
+		return shim.Error("Incorrect number of arguments. Expecting 7")
 	}
 	existRequest, _ := stub.GetState(args[0])
 	if existRequest != nil {
@@ -396,7 +396,7 @@ func (s *SmartContract) createRequest(stub shim.ChaincodeStubInterface, args []s
 	userAsBytes, _ = json.Marshal(user)
 	stub.PutState(userId, userAsBytes)
 
-	var request = Request{ID: args[0], Location: args[1], RegisterTime: time.Now().Unix(), ActivityDate: args[2], StartTime: args[3], EndTime: args[4], Deposit: deposit, State: "0", ActivityType: "Football", Owner: owner}
+	var request = Request{ID: args[0], Location: args[1], RegisterTime: time.Now().Unix(), ActivityDate: args[2], StartTime: args[3], EndTime: args[4], Deposit: deposit, State: "0", ActivityType: args[6], Owner: owner}
 	requestAsBytes, _ := json.Marshal(request)
 
 	stub.PutState(args[0], requestAsBytes)
@@ -413,8 +413,8 @@ func (s *SmartContract) createRequest(stub shim.ChaincodeStubInterface, args []s
 
 //接口方法：修改请求
 func (s *SmartContract) updateRequest(stub shim.ChaincodeStubInterface, args []string) sc.Response {
-	if len(args) != 4 {
-		return shim.Error("Incorrect number of arguments. Expecting 4")
+	if len(args) != 7 {
+		return shim.Error("Incorrect number of arguments. Expecting 7")
 	}
 	//判断该请求是否是该用户所有
 	//获取该请求真实所有者
@@ -431,20 +431,8 @@ func (s *SmartContract) updateRequest(stub shim.ChaincodeStubInterface, args []s
 	if err != nil {
 		return shim.Error(err.Error())
 	}
-	owner := request.Owner
-	//获取该交易用户名
-	var user, _ = GetCertAttribute2(stub)
-	if owner != user {
-		return shim.Error("Error User")
-	}
-	if request.State == "0" {
-		return shim.Error("Can not Update. You has been Arranged into an Activity")
-	}
-	deposit, err := strconv.Atoi(args[3])
-	if err != nil {
-		return shim.Error(err.Error())
-	}
-	request = Request{ID: args[0], Location: args[1], RegisterTime: time.Now().Unix(), StartTime: args[2], Deposit: deposit, Owner: owner, State: "0"}
+	deposit, err := strconv.Atoi(args[5])
+	request = Request{ID: args[0], Location: args[1], ActivityDate: args[2], StartTime: args[3], EndTime: args[4], Deposit: deposit, State: args[6]}
 	requestAsBytes, _ = json.Marshal(request)
 	stub.PutState(args[0], requestAsBytes)
 
