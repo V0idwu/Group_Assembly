@@ -1,3 +1,5 @@
 go/group_activity.zip
 go/requests.json
 go/resources.json
+go/downFabric.sh
+go/startFabric.sh
