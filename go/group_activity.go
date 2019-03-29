@@ -325,10 +325,12 @@ func (s *SmartContract) doMatchMaking(stub shim.ChaincodeStubInterface, args []s
 			}
 			// 检查是否是已存的matchgroup使用了同一片资源
 			finalMatchMakerResult, err := checkExistMatchGroup(stub, matchMakingResults)
+			fmt.Println("finalMatchMakerResult: ")
+			fmt.Println(finalMatchMakerResult)
 			if err != nil {
 				return shim.Error("Method checkExistMatchGroup " + err.Error())
 			}
-			for _,finalMatchMakerR := range finalMatchMakerResult{
+			for _, finalMatchMakerR := range finalMatchMakerResult {
 				finalMatchResults = append(finalMatchResults, finalMatchMakerR)
 			}
 			payload.WriteString(" } ")
@@ -336,6 +338,11 @@ func (s *SmartContract) doMatchMaking(stub shim.ChaincodeStubInterface, args []s
 		payload.WriteString(" } ")
 	}
 	// 将最终结果matchgroup存入stabe db
+	fmt.Println("==========================================")
+	fmt.Println("finalMatchMakerResult: ")
+	fmt.Println("==========================================")
+	fmt.Println(finalMatchResults)
+
 	err = setMatchGroups2Ledger(stub, finalMatchResults)
 	if err != nil {
 		return shim.Error("Method setMatchGroups2Ledger " + err.Error())
@@ -1528,14 +1535,22 @@ func setMatchGroups2Ledger(stub shim.ChaincodeStubInterface, matchGroups []Match
 
 	for _, matchgroup := range matchGroups {
 
-		value, err := json.Marshal(matchgroup)
-		if err != nil {
-			return err
+		if len(matchgroup.Requests) != 0 {
+			value, err := json.Marshal(matchgroup)
+			if err != nil {
+				return err
+			}
+			fmt.Println(" Value=================")
+			fmt.Println(value)
+			err = stub.PutState(matchgroup.Area, value)
+			fmt.Println("error : ", err.Error())
+			if err != nil {
+				return err
+			}
+		}else {
+			fmt.Println(" matchgroup is empty")
 		}
-		err = stub.PutState(matchgroup.Area, value)
-		if err != nil {
-			return err
-		}
+
 	}
 	return nil
 }
@@ -1547,6 +1562,7 @@ func (s *SmartContract) updateRequestsUponMatchGroups(stub shim.ChaincodeStubInt
 		return shim.Error("updateRequestsUponMatchGroups " + err.Error())
 	}
 
+	var requests []Request
 	for _, matchGroup := range matchGroups {
 		for _, request := range matchGroup.Requests {
 			var req Request
@@ -1558,21 +1574,35 @@ func (s *SmartContract) updateRequestsUponMatchGroups(stub shim.ChaincodeStubInt
 			if err != nil {
 				return shim.Error("updateRequestsUponMatchGroups " + err.Error())
 			}
-			req.State = "1"
-			req.ReqMatchResult = matchGroup.Area
-			data, err = json.Marshal(req)
+			requests = append(requests, req)
+		}
+	}
+
+	for _, matchGroup := range matchGroups {
+		for _, request := range requests {
+			if request.ReqMatchResult == matchGroup.Area{
+				if matchGroup.State == "0" {
+					request.State = "1"
+				}
+			}
+
+			dataIn, err := json.Marshal(request)
 			if err != nil {
 				return shim.Error("updateRequestsUponMatchGroups " + err.Error())
 			}
-			err = stub.PutState(req.ID, data)
+			err = stub.PutState(request.ID, dataIn)
 			if err != nil {
 				return shim.Error("updateRequestsUponMatchGroups " + err.Error())
 			}
 		}
-
+		matchGroup.State = "1"
 	}
 	var payload bytes.Buffer
 	payload.WriteString("updateRequestsUponMatchGroups ")
+	err = setMatchGroups2Ledger(stub, matchGroups)
+	if err != nil {
+		return shim.Error("updateRequestsUponMatchGroups " + err.Error())
+	}
 	return shim.Success(payload.Bytes())
 }
 
@@ -1772,7 +1802,7 @@ func parseMatchMakingServiceResponse(stub shim.ChaincodeStubInterface, matchMaki
 		matchGroup.Area = matchMaking.Area + ":00" + "_" + matchMaking.EndTime + "_" + activityType
 		matchGroup.StartTime = matchMaking.StartTime
 		matchGroup.EndTime = matchMaking.EndTime
-		matchGroup.State = matchMaking.State
+		matchGroup.State = "0"
 		startint, err := strconv.Atoi(strings.Split(matchMaking.StartTime, ":")[0])
 		if err != nil {
 			return nil, errors.New("step 2")
