@@ -1693,16 +1693,21 @@ func (s *SmartContract) updateRequestsUponMatchGroups(stub shim.ChaincodeStubInt
 						return shim.Error("updateRequestsUponMatchGroups " + err.Error())
 					}
 
-					fmt.Println("+++++++++++++++++request++++++++++++++++++++++")
+					fmt.Println("write request to ledger")
 					fmt.Println(request)
+					fmt.Println("Inform user on wechat")
+					resp, err := informWechat(request)
+					if err != nil {
+						return shim.Error("updateRequestsUponMatchGroups " + err.Error())
+					}
+					fmt.Println("wechat response: ", resp)
 					err = stub.PutState(request.ID, dataIn)
 					if err != nil {
 						return shim.Error("updateRequestsUponMatchGroups " + err.Error())
 					}
+					fmt.Println("inform user request.ID: ", request.ID, "request.Owner: ", request.Owner)
 				}
 			}
-
-
 		}
 		fmt.Println("+++++++++++++++++matchgourp state++++++++++++++++++++++")
 		matchGroups[i].State = "1"
@@ -1714,6 +1719,31 @@ func (s *SmartContract) updateRequestsUponMatchGroups(stub shim.ChaincodeStubInt
 		return shim.Error("updateRequestsUponMatchGroups " + err.Error())
 	}
 	return shim.Success(payload.Bytes())
+}
+//
+//func (s *SmartContract) informWechat(stub shim.ChaincodeStubInterface, args []string) sc.Response{
+//
+//	var payload bytes.Buffer
+//	payload.WriteString("Inform success ")
+//	return shim.Success(payload.Bytes())
+//}
+
+func informWechat(request Request) ([]byte, error){
+	resp, err := http.PostForm("http://10.141.221.88:36060/activityMatch",
+		url.Values{"userId": {string(request.ID)}, "content": {"活动撮合成功!"},"url":{"10.141.221.88:8878/hfc_all_activity.html?userId=" + string(request.ID)}})
+
+	if err != nil {
+		// handle error
+		return nil, err
+	}
+
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		// handle error
+		return nil, err
+	}
+	return body
 }
 
 //查看资源是否已经存在占用情况
