@@ -1729,7 +1729,7 @@ func (s *SmartContract) updateRequestsUponMatchGroups(stub shim.ChaincodeStubInt
 //}
 
 func informWechat(request Request) ([]byte, error){
-	resp, err := http.PostForm("http://10.141.221.88:36060/activityMatch",
+	resp, err := http.PostForm("http://119.29.194.211/sc/user/sendMessageToMPOne/",
 		url.Values{"userId": {string(request.ID)}, "content": {"活动撮合成功!"},"url":{"10.141.221.88:8878/hfc_all_activity.html?userId=" + string(request.ID)}})
 
 	if err != nil {
@@ -1743,7 +1743,7 @@ func informWechat(request Request) ([]byte, error){
 		// handle error
 		return nil, err
 	}
-	return body
+	return body, err
 }
 
 //查看资源是否已经存在占用情况
