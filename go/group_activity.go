@@ -1743,7 +1743,7 @@ func informWechat(request Request) ([]byte, error){
 		// handle error
 		return nil, err
 	}
-	return body
+	return body,nil
 }
 
 //查看资源是否已经存在占用情况
