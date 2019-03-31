@@ -1730,7 +1730,7 @@ func (s *SmartContract) updateRequestsUponMatchGroups(stub shim.ChaincodeStubInt
 
 func informWechat(request Request) ([]byte, error){
 	resp, err := http.PostForm("http://119.29.194.211/sc/user/sendMessageToMPOne/",
-		url.Values{"userId": {string(request.ID)}, "content": {"活动撮合成功!"},"url":{"10.141.221.88:8878/hfc_all_activity.html?userId=" + string(request.ID)}})
+		url.Values{"userId": {string(request.Owner)}, "content": {"活动撮合成功!"},"url":{"10.141.221.88:8878/hfc_all_activity.html?userId=" + string(request.Owner)}})
 
 	if err != nil {
 		// handle error
