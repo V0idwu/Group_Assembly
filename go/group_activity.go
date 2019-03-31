@@ -216,6 +216,8 @@ func (s *SmartContract) Invoke(stub shim.ChaincodeStubInterface) sc.Response {
 		return s.createResource(stub, args)
 	case "deleteResource":
 		return s.deleteResource(stub, args)
+	case "createRequestWithState":
+		return s.createRequestWithState(stub, args)
 	default:
 		return shim.Error("no such method")
 	}
@@ -272,7 +274,7 @@ func (s *SmartContract) doMatchMaking(stub shim.ChaincodeStubInterface, args []s
 	// 根据生成新的match group提供resource和request给撮合算法
 	matchGroupsByDateType := generateNewMatchGroup(resources, requests)
 	fmt.Println("generateNewMatchGroup is running =====================")
-	fmt.Println(matchGroupsByDateType)
+
 
 	// 按日期，分组提交给撮合服务
 	for activityType, matchGroupsByDates := range matchGroupsByDateType {
@@ -283,6 +285,9 @@ func (s *SmartContract) doMatchMaking(stub shim.ChaincodeStubInterface, args []s
 			payload.WriteString(" ActivityDate: { ")
 			//payload.WriteString(activityDate)
 			for activityDate,matchGroups := range matchGroupsByDate{
+				fmt.Println("activityType: ", activityType)
+				fmt.Println("activityDate: ", activityDate)
+				fmt.Println("matchGroups: ", matchGroups)
 				payload.WriteString(activityDate)
 				// 生成撮合算法的输入 resourceBytes和requestBytes
 				requestArr, resourceArr := prepare4MatchMakerservice(matchGroups)
@@ -307,11 +312,12 @@ func (s *SmartContract) doMatchMaking(stub shim.ChaincodeStubInterface, args []s
 				//payload.WriteString(string(resourceBytes))
 				//payload.WriteString("requestBytes : ")
 				//payload.WriteString(string(requestBytes))
-
+				fmt.Println("Invoke MatchMaking Algorithm")
 				matchMakingResultBytes, err := httpPostForm(resourceBytes, requestBytes)
 				if err != nil {
 					return shim.Error("MatchMaking HTTP : " + err.Error())
 				}
+				fmt.Println("Invoke MatchMaking Algorithm return ")
 				//payload.WriteString(string(matchMakingResultBytes))
 				// 将撮合结果整合成matchgroup的样式
 				matchMakingResults, err := parseMatchMakingServiceResponse(stub, matchMakingResultBytes, activityType)
@@ -356,7 +362,10 @@ func (s *SmartContract) doMatchMaking(stub shim.ChaincodeStubInterface, args []s
 		return shim.Error("Method setMatchGroups2Ledger " + err.Error())
 	}
 	payload.WriteString(" Save MatchMaking Result into StateDB ")
-	return shim.Success(payload.Bytes())
+
+	var payload2 bytes.Buffer
+	payload2.WriteString("------------- Match Making Success------------")
+	return shim.Success(payload2.Bytes())
 }
 
 func (s *SmartContract) query(stub shim.ChaincodeStubInterface, args []string) sc.Response {
@@ -424,11 +433,71 @@ func (s *SmartContract) createRequest(stub shim.ChaincodeStubInterface, args []s
 		payload.WriteString("Not enough money")
 		return shim.Success(payload.Bytes())
 	}
+
+	if deposit < 1 || deposit > 1000{
+		var payload bytes.Buffer
+		payload.WriteString("Not enough money")
+		return shim.Error(string(payload.Bytes()))
+	}
 	user.Money = money - deposit
 	userAsBytes, _ = json.Marshal(user)
 	stub.PutState(userId, userAsBytes)
 
 	var request = Request{ID: args[0], Location: args[1], RegisterTime: time.Now().Unix(), ActivityDate: args[2], StartTime: args[3], EndTime: args[4], Deposit: deposit, State: "0", ActivityType: args[6], Owner: owner}
+	requestAsBytes, _ := json.Marshal(request)
+
+	stub.PutState(args[0], requestAsBytes)
+
+	var payload bytes.Buffer
+	payload.WriteString("ID:")
+	payload.WriteString(args[0])
+	payload.WriteString("  Register Success")
+
+	// 参与人数
+	applicantNum = applicantNum + 1
+	return shim.Success(payload.Bytes())
+}
+
+func (s *SmartContract) createRequestWithState(stub shim.ChaincodeStubInterface, args []string) sc.Response {
+	if len(args) != 8 {
+		return shim.Error("Incorrect number of arguments. Expecting 8")
+	}
+	existRequest, _ := stub.GetState(args[0])
+	if existRequest != nil {
+		return shim.Error("Exist Request. ")
+	}
+
+	var owner, _ = GetCertAttribute2(stub)
+	var userId = "user" + owner
+	userAsBytes, _ := stub.GetState(userId)
+	if userAsBytes == nil {
+		var user = User{ID: userId, Money: 10000}
+		userAsBytes, _ = json.Marshal(user)
+		stub.PutState(userId, userAsBytes)
+	}
+
+	user := User{}
+	json.Unmarshal(userAsBytes, &user) //unmarshal it aka JSON.parse()
+	money := user.Money
+	deposit, err := strconv.Atoi(args[5])
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	if money < deposit {
+		var payload bytes.Buffer
+		payload.WriteString("Not enough money")
+		return shim.Success(payload.Bytes())
+	}
+	if deposit < 1 || deposit > 1000{
+		var payload bytes.Buffer
+		payload.WriteString("Not enough money")
+		return shim.Error(string(payload.Bytes()))
+	}
+	user.Money = money - deposit
+	userAsBytes, _ = json.Marshal(user)
+	stub.PutState(userId, userAsBytes)
+
+	var request = Request{ID: args[0], Location: args[1], RegisterTime: time.Now().Unix(), ActivityDate: args[2], StartTime: args[3], EndTime: args[4], Deposit: deposit, State: args[7], ActivityType: args[6], Owner: owner}
 	requestAsBytes, _ := json.Marshal(request)
 
 	stub.PutState(args[0], requestAsBytes)
@@ -506,6 +575,16 @@ func (s *SmartContract) cancelRequest(stub shim.ChaincodeStubInterface, args []s
 		return shim.Error("Can not Cancel. You has been Arranged into an Activity")
 	}
 
+	// 用户取消的情况
+	request.State = "5"
+	data,err := json.Marshal(request)
+	if err !=nil{
+		return shim.Error(err.Error())
+	}
+	err = stub.PutState(requestID, data)
+	if err !=nil{
+		return shim.Error(err.Error())
+	}
 	var userId = "user" + owner
 	userAsBytes, _ := stub.GetState(userId)
 
@@ -516,7 +595,7 @@ func (s *SmartContract) cancelRequest(stub shim.ChaincodeStubInterface, args []s
 	userAsBytes, _ = json.Marshal(user)
 	stub.PutState(userId, userAsBytes)
 
-	stub.DelState(args[0])
+	//stub.DelState(args[0])
 
 	var payload bytes.Buffer
 	payload.WriteString("ID:")
@@ -660,7 +739,7 @@ func (s *SmartContract) createResource(stub shim.ChaincodeStubInterface, args []
 	}
 	resource := Resource{args[0], args[1], args[2], args[3], args[4], args[5], capacity, "tbd", args[7], args[8], duration}
 
-	key, err := stub.CreateCompositeKey("Resource", []string{resource.Spot, resource.SpotID, resource.ActivityType, resource.StartTime, resource.EndTime})
+	key, err := stub.CreateCompositeKey("Resource", []string{resource.Spot, resource.SpotID, resource.ActivityType, resource.StartTime, resource.EndTime,strconv.Itoa(resource.Capacity)})
 	if err != nil {
 		return shim.Error(" createResource " + err.Error())
 	}
@@ -680,11 +759,11 @@ func (s *SmartContract) createResource(stub shim.ChaincodeStubInterface, args []
 
 // 删除资源
 func (s *SmartContract) deleteResource(stub shim.ChaincodeStubInterface, args []string) sc.Response {
-	if len(args) != 5 {
-		return shim.Error("Incorrect number of arguments. Expecting 5")
+	if len(args) != 6 {
+		return shim.Error("Incorrect number of arguments. Expecting 6")
 	}
-	// resource.Spot, resource.SpotID, resource.ActivityType, resource.StartTime, resource.EndTime
-	key, err := stub.CreateCompositeKey("Resource", []string{args[1], args[0], args[2], args[3], args[4]})
+	// resource.Spot, resource.SpotID, resource.ActivityType, resource.StartTime, resource.EndTime, resource.Capacity
+	key, err := stub.CreateCompositeKey("Resource", []string{args[1], args[0], args[2], args[3], args[4], args[5]})
 	if err != nil {
 		return shim.Error(" deleteResource " + err.Error())
 	}
@@ -839,10 +918,10 @@ func queryValueByKeyWithRegex(stub shim.ChaincodeStubInterface, args []string) (
 }
 
 func (s *SmartContract) queryValueByKeyWithRegexSC(stub shim.ChaincodeStubInterface, args []string) sc.Response {
-	if len(args) != 3 {
-		return shim.Error("Incorrect number of arguments. Expecting 3")
+	if len(args) != 4 {
+		return shim.Error("Incorrect number of arguments. Expecting 4")
 	}
-	queryString := fmt.Sprintf("{\"selector\":{\"%s\":{\"%s\":\"%s\"}}", args[0], args[1], args[2])
+	queryString := fmt.Sprintf("{\"selector\":{\"%s\":\"%s\",\"%s\":{\"$regex\":\"%s\"}}}", args[0], args[1],args[2],args[3])
 	requestAsBytes, err := getQueryResultForQueryString(stub, queryString)
 	if err != nil {
 		return shim.Error(err.Error())
@@ -1086,8 +1165,8 @@ func initResources() []Resource {
 			"Shanghai",
 			10,
 			"tbd",
-			"13:00",
-			"14:00",
+			"15:00",
+			"16:00",
 			1,
 		},
 		Resource{
@@ -1099,8 +1178,8 @@ func initResources() []Resource {
 			"Shanghai",
 			10,
 			"tbd",
-			"14:00",
-			"15:00",
+			"16:00",
+			"17:00",
 			1,
 		},
 		Resource{
@@ -1473,7 +1552,7 @@ func getMatchGroupsFromLedger(stub shim.ChaincodeStubInterface) ([]MatchGroup, e
 func setResources2Ledger(stub shim.ChaincodeStubInterface, resources []Resource) error {
 
 	for _, resource := range resources {
-		key, err := stub.CreateCompositeKey("Resource", []string{resource.Spot, resource.SpotID, resource.ActivityType, resource.StartTime, resource.EndTime})
+		key, err := stub.CreateCompositeKey("Resource", []string{resource.Spot, resource.SpotID, resource.ActivityType, resource.StartTime, resource.EndTime, strconv.Itoa(resource.Capacity)})
 		if err != nil {
 			return err
 		}
@@ -1551,7 +1630,6 @@ func setMatchGroups2Ledger(stub shim.ChaincodeStubInterface, matchGroups []Match
 			if err != nil {
 				return err
 			}
-			//resourceKey, err := stub.CreateCompositeKey("MatchGroup", []string{matchgroup.ResourcesInstance.Spot, matchgroup.ResourcesInstance.SpotID, matchgroup.ResourcesInstance.ActivityType,matchgroup.ActivityDate, matchgroup.StartTime, matchgroup.EndTime})
 
 			//fmt.Println(resourceKey)
 			if err != nil {
@@ -1833,7 +1911,7 @@ func parseMatchMakingServiceResponse(stub shim.ChaincodeStubInterface, matchMaki
 		spot := strings.Split(matchMaking.Area, "_")[0]
 		spotID := strings.Split(matchMaking.Area, "_")[1]
 		matchGroup.ActivityDate = matchMaking.ActivityDate
-		matchGroup.Area = matchMaking.Area + ":00" + "_" + matchMaking.EndTime + "_" + activityType
+		matchGroup.Area = matchMaking.Area + ":00" + "_" + matchMaking.EndTime + "_" + activityType + "_" + "Num" + strconv.Itoa(len(matchMaking.Requests))
 		matchGroup.StartTime = matchMaking.StartTime
 		matchGroup.EndTime = matchMaking.EndTime
 		matchGroup.State = "0"
@@ -1864,7 +1942,7 @@ func parseMatchMakingServiceResponse(stub shim.ChaincodeStubInterface, matchMaki
 			matchGroup.Requests = append(matchGroup.Requests, request)
 		}
 
-		resourceKey, err := stub.CreateCompositeKey("Resource", []string{spot, spotID, activityType, matchGroup.StartTime, matchGroup.EndTime})
+		resourceKey, err := stub.CreateCompositeKey("Resource", []string{spot, spotID, activityType, matchGroup.StartTime, matchGroup.EndTime, strconv.Itoa(len(matchGroup.Requests))})
 		if err != nil {
 			return nil, err
 		}
@@ -1893,3 +1971,7 @@ func main() {
 	}
 
 }
+
+
+//MatchMakingResult:  ActivityType: { 1 ActivityDate: { 2019-03-302019-04-312019-04-01 }  ActivityType: { 2 ActivityDate: { 2019-03-302019-04-312019-04-01 }  ActivityType: { 3 ActivityDate: { 2019-03-302019-04-312019-04-01 }  ActivityType: { 8 ActivityDate: { 2019-03-302019-04-312019-04-01--- Area: Fudan Zhangjiang Campus PingPong table_1_2019-04-01_12:00_13:00_8 --- Requests: 900009,900010, ---  }  }  Save MatchMaking Result into StateDB
+//MatchMakingResult:  ActivityType: { 2 ActivityDate: { 2019-03-302019-04-312019-04-01 }  ActivityType: { 3 ActivityDate: { 2019-03-302019-04-312019-04-01 }  ActivityType: { 8 ActivityDate: { 2019-03-302019-04-312019-04-01--- Area: Fudan Zhangjiang Campus PingPong table_1_2019-04-01_12:00_13:00_8 --- Requests: 900009,900010, ---  }  }  ActivityType: { 1 ActivityDate: { 2019-03-302019-04-312019-04-01 }  Save MatchMaking Result into StateDB
